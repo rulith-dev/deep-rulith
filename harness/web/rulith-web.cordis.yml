@@ -1,0 +1,184 @@
+# Deep Rulith: the Rulith edition of DeepSeek Harness (dsh 0.2.1-alpha.1 web profile, base + web-app). dsh's own agent and UI stay;
+# its local tools, dsh-authored model text, DeepSeek account, feedback, telemetry and session uploads are off. The model is the one
+# set in Rulith (any OpenAI-compatible endpoint, through the generic adapter: no DeepSeek-specific headers or identity).
+# Rulith's six tools, the approved persona and the Deep Rulith account entry and panel are added.
+# Paths come from the launcher's environment (start-deep-rulith.mjs); nothing secret is written here.
+- id: tool-plugin-manager
+  disabled: true
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: fs-observation-policy
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: agent-instructions
+  disabled: true
+- id: skill
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: skill-badge
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: goal
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: subagent
+  disabled: true
+- id: subagent-spawn-in-process
+  disabled: true
+- id: subagent-fork-in-process
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: ptc-runtime
+  disabled: true
+- id: workflow-ptc
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: spill-local
+  disabled: true
+- id: spill-policy
+  disabled: true
+- id: tool-result-pruner
+  disabled: true
+- id: compaction-basic
+  disabled: true
+- id: command-compact
+  disabled: true
+- id: image-offload
+  disabled: true
+- id: repeat-tool-reminder
+  disabled: true
+- id: web
+  disabled: true
+- id: web-search-deepseek
+  disabled: true
+- id: web-fetch-http
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: mcp-resources
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+- id: otel
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- id: desktop-product-telemetry
+  disabled: true
+- id: product-analytics
+  disabled: true
+- id: preset-ptc
+  disabled: true
+- id: preset-cordis
+  disabled: true
+- id: llm-deepseek
+  disabled: true
+- id: llm-deepseek-account
+  disabled: true
+- id: deepseek-account
+  disabled: true
+- id: deepseek-llm-api-extensions
+  disabled: true
+- id: message-feedback
+  disabled: true
+- id: ui-message-feedback
+  disabled: true
+- id: command-feedback
+  disabled: true
+- id: ui-settings-account
+  disabled: true
+- id: account-controller
+  disabled: true
+- id: ui-brand-official
+  disabled: true
+- id: preset-standard
+  disabled: true
+- id: preset-minimal
+  disabled: true
+- id: agent-preset-registry
+  config:
+    default: rulith
+- id: system-prompt
+  config:
+    includeRuntimeContext: false
+    includeHarnessIdentity: false
+    personaPrefix: ''
+    personaSuffix: ''
+- id: tools
+  config:
+    mode: native
+- id: agent-loop
+  config:
+    agents: []
+    maxParallelToolCalls: 1
+- id: agent-default-model
+  config:
+    provider: rulith-model
+    model: !!js process.env.RULITH_DSH_MODEL
+- id: llm-pi-ai
+  config:
+    providers:
+      rulith-model:
+        api: openai-completions
+        apiKeyEnv: RULITH_MODEL_KEY
+        baseURL: !!js process.env.RULITH_DSH_MODEL_BASE
+        compat:
+          thinkingFormat: deepseek
+        models:
+          - id: !!js process.env.RULITH_DSH_MODEL
+            contextWindow: 1000000
+- insert:
+    - id: rulith-runtime
+      name: ./rulith-runtime.mjs
+      config:
+        managerHome: !!js process.env.RULITH_DSH_MANAGER_HOME
+        managerPort: !!js process.env.RULITH_DSH_MANAGER_PORT
+        keyFile: !!js process.env.RULITH_DSH_KEY_FILE
+        runtimeEntry: !!js process.env.RULITH_DSH_RUNTIME_ENTRY
+        agentName: !!js process.env.RULITH_DSH_AGENT
+        consoleUrl: !!js process.env.RULITH_DSH_CONSOLE_URL
+        mcpUrl: !!js process.env.RULITH_DSH_MCP_URL
+    - id: rulith-web-gate
+      name: ./rulith-web-gate.mjs
+      config:
+        persona: !!js process.env.RULITH_DSH_PERSONA
+    - id: rulith-dsh-ui
+      name: rulith-dsh-ui
+    # The only agent preset: no agent-layer plugins. dsh's stock presets carry their own shell, file, web and
+    # subagent tools at the agent layer, which a global tool restriction does not reach, so they stay off.
+    - id: preset-rulith
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: rulith
+        order: 0
+        plugins: []
