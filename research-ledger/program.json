@@ -1,7 +1,7 @@
 {
   "id": "research_ledger",
   "title": "Research ledger",
-  "summary": "Keeps an investigation on the Board: hypotheses with their Case, the data they rest on, dropped directions, and which hypotheses are still open.",
+  "summary": "Keeps an investigation on the Board: hypotheses with their Case, the data they rest on, dropped directions, and which hypotheses are still open. Each Case shows its ledger as research.ledger.item and research.ledger.case_datum rows.",
   "vocabulary": {
     "defines": [
       {
@@ -20,7 +20,8 @@
           "name",
           "value",
           "unit",
-          "source"
+          "source",
+          "case_id"
         ]
       },
       {
@@ -53,10 +54,24 @@
         ]
       },
       {
-        "id": "research.ledger.open",
-        "as": "open",
+        "id": "research.ledger.item",
+        "as": "item",
         "args": [
-          "hypothesis"
+          "case_id",
+          "hypothesis",
+          "claim",
+          "state"
+        ]
+      },
+      {
+        "id": "research.ledger.case_datum",
+        "as": "case_datum",
+        "args": [
+          "case_id",
+          "name",
+          "value",
+          "unit",
+          "source"
         ]
       },
       {
@@ -67,11 +82,21 @@
         ]
       }
     ],
-    "imports": []
+    "imports": [
+      {
+        "id": "root",
+        "as": "root"
+      },
+      {
+        "id": "case_context",
+        "as": "case_context"
+      }
+    ]
   },
   "pins": [
     "is_dropped",
-    "open",
+    "item",
+    "case_datum",
     "case_open"
   ],
   "rules": [
@@ -83,7 +108,7 @@
           "predicate": "dropped",
           "args": {
             "hypothesis": "?h",
-            "reason": "?r"
+            "reason": "?x"
           }
         }
       ],
@@ -97,9 +122,23 @@
       ]
     },
     {
-      "id": "open_until_decided",
+      "id": "item_open",
       "label": "A hypothesis stays open until it is supported, refuted or dropped.",
       "when": [
+        {
+          "predicate": "root",
+          "args": {
+            "node": "?r"
+          }
+        },
+        {
+          "predicate": "case_context",
+          "args": {
+            "root": "?r",
+            "case_type": "?t",
+            "case_id": "?k"
+          }
+        },
         {
           "predicate": "hypothesis",
           "args": {
@@ -132,17 +171,34 @@
       ],
       "then": [
         {
-          "predicate": "open",
+          "predicate": "item",
           "args": {
-            "hypothesis": "?h"
+            "case_id": "?k",
+            "hypothesis": "?h",
+            "claim": "?c",
+            "state": "open"
           }
         }
       ]
     },
     {
-      "id": "case_with_open_hypothesis",
-      "label": "A Case with an open hypothesis still has an open question.",
+      "id": "item_supported",
+      "label": "A hypothesis a rule derives as supported is shown as supported.",
       "when": [
+        {
+          "predicate": "root",
+          "args": {
+            "node": "?r"
+          }
+        },
+        {
+          "predicate": "case_context",
+          "args": {
+            "root": "?r",
+            "case_type": "?t",
+            "case_id": "?k"
+          }
+        },
         {
           "predicate": "hypothesis",
           "args": {
@@ -152,9 +208,125 @@
           }
         },
         {
-          "predicate": "open",
+          "predicate": "supported",
           "args": {
             "hypothesis": "?h"
+          }
+        }
+      ],
+      "then": [
+        {
+          "predicate": "item",
+          "args": {
+            "case_id": "?k",
+            "hypothesis": "?h",
+            "claim": "?c",
+            "state": "supported"
+          }
+        }
+      ]
+    },
+    {
+      "id": "item_refuted",
+      "label": "A hypothesis a rule derives as refuted is shown as refuted.",
+      "when": [
+        {
+          "predicate": "root",
+          "args": {
+            "node": "?r"
+          }
+        },
+        {
+          "predicate": "case_context",
+          "args": {
+            "root": "?r",
+            "case_type": "?t",
+            "case_id": "?k"
+          }
+        },
+        {
+          "predicate": "hypothesis",
+          "args": {
+            "id": "?h",
+            "claim": "?c",
+            "case_id": "?k"
+          }
+        },
+        {
+          "predicate": "refuted",
+          "args": {
+            "hypothesis": "?h"
+          }
+        }
+      ],
+      "then": [
+        {
+          "predicate": "item",
+          "args": {
+            "case_id": "?k",
+            "hypothesis": "?h",
+            "claim": "?c",
+            "state": "refuted"
+          }
+        }
+      ]
+    },
+    {
+      "id": "item_dropped",
+      "label": "A dropped hypothesis is shown as dropped.",
+      "when": [
+        {
+          "predicate": "root",
+          "args": {
+            "node": "?r"
+          }
+        },
+        {
+          "predicate": "case_context",
+          "args": {
+            "root": "?r",
+            "case_type": "?t",
+            "case_id": "?k"
+          }
+        },
+        {
+          "predicate": "hypothesis",
+          "args": {
+            "id": "?h",
+            "claim": "?c",
+            "case_id": "?k"
+          }
+        },
+        {
+          "predicate": "is_dropped",
+          "args": {
+            "hypothesis": "?h"
+          }
+        }
+      ],
+      "then": [
+        {
+          "predicate": "item",
+          "args": {
+            "case_id": "?k",
+            "hypothesis": "?h",
+            "claim": "?c",
+            "state": "dropped"
+          }
+        }
+      ]
+    },
+    {
+      "id": "case_with_open_hypothesis",
+      "label": "A Case with an open hypothesis still has an open question.",
+      "when": [
+        {
+          "predicate": "item",
+          "args": {
+            "case_id": "?k",
+            "hypothesis": "?h",
+            "claim": "?c",
+            "state": "open"
           }
         }
       ],
@@ -163,6 +335,48 @@
           "predicate": "case_open",
           "args": {
             "case_id": "?k"
+          }
+        }
+      ]
+    },
+    {
+      "id": "case_data",
+      "label": "Each datum recorded for a Case is shown with that Case.",
+      "when": [
+        {
+          "predicate": "root",
+          "args": {
+            "node": "?r"
+          }
+        },
+        {
+          "predicate": "case_context",
+          "args": {
+            "root": "?r",
+            "case_type": "?t",
+            "case_id": "?k"
+          }
+        },
+        {
+          "predicate": "datum",
+          "args": {
+            "name": "?n",
+            "value": "?v",
+            "unit": "?u",
+            "source": "?s",
+            "case_id": "?k"
+          }
+        }
+      ],
+      "then": [
+        {
+          "predicate": "case_datum",
+          "args": {
+            "case_id": "?k",
+            "name": "?n",
+            "value": "?v",
+            "unit": "?u",
+            "source": "?s"
           }
         }
       ]
