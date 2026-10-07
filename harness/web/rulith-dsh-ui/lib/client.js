@@ -91,8 +91,17 @@ window.__ModuleLoader__.load({
             // An Agent chosen earlier but not set up on this computer (for example after signing in again) cannot be
             // set up by its radio, which is already checked: the row offers the step itself.
             a.paired ? dot(a.worker && a.worker.state === "online" ? GREEN : AMBER)
-              : h("button", { style: { ...button, fontSize: 11 }, disabled: !!busy,
-                  onClick: (event) => { event.preventDefault(); run("select", () => api("select", { agentId: a.id })); } }, "在本机设置"))),
+              : (a.reconnectable || []).length === 0
+                ? h("button", { style: { ...button, fontSize: 11 }, disabled: !!busy,
+                    onClick: (event) => { event.preventDefault(); run("select", () => api("select", { agentId: a.id, newConnection: true })); } }, "在本机设置")
+                : null)),
+          // Existing connections of an unpaired Agent can be reconnected: the person chooses explicitly (D-1007b).
+          (s.agents || []).filter((a) => !a.paired && (a.reconnectable || []).length > 0).map((a) => h("div", { key: "rc-" + a.id, style: { margin: "4px 0 8px 24px", fontSize: 12 } },
+            h("div", { style: { opacity: 0.75, marginBottom: 4 } }, a.name + "：重新接上原来的连接会保留它的 Source 绑定和工具授权，旧密钥随即作废。"),
+            (a.reconnectable || []).map((c) => h("button", { key: c.connectionId, style: { ...button, fontSize: 11, marginRight: 6, marginBottom: 4 }, disabled: !!busy,
+              onClick: () => run("select", () => api("select", { agentId: a.id, reconnectConnectionId: c.connectionId })) }, "重新接上「" + c.name + "」")),
+            h("button", { style: { ...button, fontSize: 11 }, disabled: !!busy,
+              onClick: () => run("select", () => api("select", { agentId: a.id, newConnection: true })) }, "新建连接"))),
           agent && agent.instanceId ? h("label", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 8 } },
             h("input", { type: "checkbox", checked: !!(agent.worker && agent.worker.enabled), disabled: !!busy,
               onChange: (event) => run("worker", () => api("worker", { instanceId: agent.instanceId, enabled: event.target.checked })) }),

@@ -184,7 +184,10 @@ export async function apply(ctx, config = {}) {
       teaching: state.device?.teaching ?? '',
       agents: (state.device?.agents ?? []).map((agent) => {
         const instance = instances.find((row) => row.agentId === agent.id);
-        return { id: agent.id, name: agent.name, instanceId: instance?.id ?? '', paired: !!instance?.paired,
+        // Worker Connections of this Agent that can be reconnected (Runtime 0.12.5 and later): only names and ids.
+        const reconnectable = (Array.isArray(agent.reconnectable) ? agent.reconnectable : [])
+          .map((row) => ({ connectionId: String(row.connectionId), name: String(row.displayName || row.name), createdAt: String(row.createdAt ?? '') }));
+        return { id: agent.id, name: agent.name, instanceId: instance?.id ?? '', paired: !!instance?.paired, reconnectable,
           worker: instance?.workerSetting ? { enabled: !!instance.workerSetting.enabled, state: instance.workerSetting.state ?? '',
             failure: instance.workerSetting.failure ?? '' } : null };
       }),
@@ -199,7 +202,9 @@ export async function apply(ctx, config = {}) {
     let text = ''; req.on('data', (chunk) => { text += chunk; if (text.length > 65536) req.destroy(); });
     req.on('end', () => { try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); } }); req.on('error', reject);
   });
-  const setUp = async (agentId) => {
+  // reconnectConnectionId: an existing Worker Connection of this Agent the person chose to reconnect (PSC SYS-CONN-01,
+  // D-1007b); absent means a new Connection.
+  const setUp = async (agentId, reconnectConnectionId) => {
     let state = await manager('/manager/state');
     let instance = (state.instances ?? []).find((row) => row.agentId === agentId && row.mode === 'local_agent' && !row.signedOutAt);
     if (!instance) {
@@ -210,7 +215,8 @@ export async function apply(ctx, config = {}) {
       instance = created.instance ?? (created.instances ?? []).find((row) => row.agentId === agentId) ?? created;
     }
     if (!instance.paired) {
-      await manager('/manager/instances/pair', { instanceId: instance.id, agentId });
+      await manager('/manager/instances/pair', { instanceId: instance.id, agentId,
+        ...(reconnectConnectionId ? { reconnectConnectionId } : {}) });
       // Pairing often completes inside the pair call; poll only while it is still in progress.
       for (let i = 0; i < 20; i++) {
         state = await manager('/manager/state');
@@ -305,7 +311,15 @@ export async function apply(ctx, config = {}) {
       const state = await manager('/manager/state');
       const agent = (state.device?.agents ?? []).find((row) => row.id === String(body.agentId ?? ''));
       if (!agent) throw new Error('Choose an Agent of the signed-in account');
-      await setUp(agent.id);
+      // Reconnecting an existing Connection or creating a new one is the person's explicit choice (D-1007b): an Agent
+      // that offers Connections to reconnect is not set up until the request says which.
+      const offered = (Array.isArray(agent.reconnectable) ? agent.reconnectable : []).map((row) => String(row.connectionId));
+      const reconnect = typeof body.reconnectConnectionId === 'string' ? body.reconnectConnectionId : '';
+      const instance = (state.instances ?? []).find((row) => row.agentId === agent.id && row.mode === 'local_agent' && !row.signedOutAt);
+      if (!instance?.paired && offered.length && !reconnect && body.newConnection !== true)
+        throw new Error('Choose whether to reconnect one of this Agent\'s existing connections or to create a new one');
+      if (reconnect && !offered.includes(reconnect)) throw new Error('That connection cannot be reconnected now; refresh and choose again');
+      await setUp(agent.id, reconnect);
       fs.writeFileSync(selectionFile, JSON.stringify({ agentName: agent.name }));
       await tick();
       return summary(await manager('/manager/state'));
