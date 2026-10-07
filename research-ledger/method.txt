@@ -1,0 +1,9 @@
+Research ledger
+
+An investigation keeps its analysis and its verification on the Board, so that a later Case can read what was tried and what it showed.
+
+Each idea to test is a hypothesis with its Case. The numbers an argument rests on are data, each naming where it came from. A hypothesis is decided by a rule that derives it supported or refuted from the receipts and data that settle it; a direction given up is dropped with a reason.
+
+A hypothesis dropped with a reason is dropped.
+A hypothesis stays open until it is supported, refuted or dropped.
+A Case with an open hypothesis still has an open question.

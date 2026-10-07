@@ -1,0 +1,408 @@
+{
+  "program": {
+    "id": "research_ledger",
+    "title": "Research ledger",
+    "summary": "Keeps an investigation on the Board: hypotheses with their Case, the data they rest on, dropped directions, and which hypotheses are still open.",
+    "vocabulary": {
+      "defines": [
+        {
+          "id": "research.ledger.hypothesis",
+          "as": "hypothesis",
+          "args": [
+            "id",
+            "claim",
+            "case_id"
+          ]
+        },
+        {
+          "id": "research.ledger.datum",
+          "as": "datum",
+          "args": [
+            "name",
+            "value",
+            "unit",
+            "source"
+          ]
+        },
+        {
+          "id": "research.ledger.supported",
+          "as": "supported",
+          "args": [
+            "hypothesis"
+          ]
+        },
+        {
+          "id": "research.ledger.refuted",
+          "as": "refuted",
+          "args": [
+            "hypothesis"
+          ]
+        },
+        {
+          "id": "research.ledger.dropped",
+          "as": "dropped",
+          "args": [
+            "hypothesis",
+            "reason"
+          ]
+        },
+        {
+          "id": "research.ledger.is_dropped",
+          "as": "is_dropped",
+          "args": [
+            "hypothesis"
+          ]
+        },
+        {
+          "id": "research.ledger.open",
+          "as": "open",
+          "args": [
+            "hypothesis"
+          ]
+        },
+        {
+          "id": "research.ledger.case_open",
+          "as": "case_open",
+          "args": [
+            "case_id"
+          ]
+        }
+      ],
+      "imports": []
+    },
+    "pins": [
+      "is_dropped",
+      "open",
+      "case_open"
+    ],
+    "rules": [
+      {
+        "id": "dropped_with_reason",
+        "label": "A hypothesis dropped with a reason is dropped.",
+        "when": [
+          {
+            "predicate": "dropped",
+            "args": {
+              "hypothesis": "?h",
+              "reason": "?r"
+            }
+          }
+        ],
+        "then": [
+          {
+            "predicate": "is_dropped",
+            "args": {
+              "hypothesis": "?h"
+            }
+          }
+        ]
+      },
+      {
+        "id": "open_until_decided",
+        "label": "A hypothesis stays open until it is supported, refuted or dropped.",
+        "when": [
+          {
+            "predicate": "hypothesis",
+            "args": {
+              "id": "?h",
+              "claim": "?c",
+              "case_id": "?k"
+            }
+          },
+          {
+            "predicate": "supported",
+            "args": {
+              "hypothesis": "?h"
+            },
+            "naf": true
+          },
+          {
+            "predicate": "refuted",
+            "args": {
+              "hypothesis": "?h"
+            },
+            "naf": true
+          },
+          {
+            "predicate": "is_dropped",
+            "args": {
+              "hypothesis": "?h"
+            },
+            "naf": true
+          }
+        ],
+        "then": [
+          {
+            "predicate": "open",
+            "args": {
+              "hypothesis": "?h"
+            }
+          }
+        ]
+      },
+      {
+        "id": "case_with_open_hypothesis",
+        "label": "A Case with an open hypothesis still has an open question.",
+        "when": [
+          {
+            "predicate": "hypothesis",
+            "args": {
+              "id": "?h",
+              "claim": "?c",
+              "case_id": "?k"
+            }
+          },
+          {
+            "predicate": "open",
+            "args": {
+              "hypothesis": "?h"
+            }
+          }
+        ],
+        "then": [
+          {
+            "predicate": "case_open",
+            "args": {
+              "case_id": "?k"
+            }
+          }
+        ]
+      }
+    ],
+    "acceptance": [],
+    "actions": []
+  },
+  "caseContracts": [
+    {
+      "format": "rulith-case-contract/1",
+      "caseType": "research_ledger_check",
+      "title": "Research ledger mechanical check",
+      "businessKey": {
+        "predicate": "research.ledger.hypothesis",
+        "arguments": [
+          "case_id"
+        ]
+      },
+      "opening": {
+        "predicate": "research.ledger.hypothesis",
+        "keyArguments": [
+          "case_id"
+        ]
+      },
+      "acceptance": {
+        "predicate": "research.ledger.case_open",
+        "keyArguments": [
+          "case_id"
+        ],
+        "minimumGroundingFloor": "attested"
+      },
+      "terminal": {
+        "cardinality": "once_per_case",
+        "disposition": "completed",
+        "requiresCertified": true
+      }
+    }
+  ],
+  "citations": [
+    {
+      "ruleId": "dropped_with_reason",
+      "quote": "A hypothesis dropped with a reason is dropped.",
+      "locator": {
+        "kind": "character-range",
+        "start": 440,
+        "end": 486
+      }
+    },
+    {
+      "ruleId": "open_until_decided",
+      "quote": "A hypothesis stays open until it is supported, refuted or dropped.",
+      "locator": {
+        "kind": "character-range",
+        "start": 487,
+        "end": 553
+      }
+    },
+    {
+      "ruleId": "case_with_open_hypothesis",
+      "quote": "A Case with an open hypothesis still has an open question.",
+      "locator": {
+        "kind": "character-range",
+        "start": 554,
+        "end": 612
+      }
+    }
+  ],
+  "examples": [
+    {
+      "label": "an undecided hypothesis keeps its Case open",
+      "facts": [
+        {
+          "predicate": "research.ledger.hypothesis",
+          "args": {
+            "id": "h1",
+            "claim": "claim h1",
+            "case_id": "case-1"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "predicate": "research.ledger.open",
+          "args": {
+            "hypothesis": "h1"
+          }
+        },
+        {
+          "predicate": "research.ledger.case_open",
+          "args": {
+            "case_id": "case-1"
+          }
+        }
+      ],
+      "forbid": []
+    },
+    {
+      "label": "a supported hypothesis is no longer open",
+      "facts": [
+        {
+          "predicate": "research.ledger.hypothesis",
+          "args": {
+            "id": "h1",
+            "claim": "claim h1",
+            "case_id": "case-1"
+          }
+        },
+        {
+          "predicate": "research.ledger.supported",
+          "args": {
+            "hypothesis": "h1"
+          }
+        }
+      ],
+      "expect": [],
+      "forbid": [
+        {
+          "predicate": "research.ledger.open",
+          "args": {
+            "hypothesis": "h1"
+          }
+        },
+        {
+          "predicate": "research.ledger.case_open",
+          "args": {
+            "case_id": "case-1"
+          }
+        }
+      ]
+    },
+    {
+      "label": "a refuted hypothesis is no longer open",
+      "facts": [
+        {
+          "predicate": "research.ledger.hypothesis",
+          "args": {
+            "id": "h1",
+            "claim": "claim h1",
+            "case_id": "case-1"
+          }
+        },
+        {
+          "predicate": "research.ledger.refuted",
+          "args": {
+            "hypothesis": "h1"
+          }
+        }
+      ],
+      "expect": [],
+      "forbid": [
+        {
+          "predicate": "research.ledger.open",
+          "args": {
+            "hypothesis": "h1"
+          }
+        }
+      ]
+    },
+    {
+      "label": "a dropped hypothesis is no longer open",
+      "facts": [
+        {
+          "predicate": "research.ledger.hypothesis",
+          "args": {
+            "id": "h1",
+            "claim": "claim h1",
+            "case_id": "case-1"
+          }
+        },
+        {
+          "predicate": "research.ledger.dropped",
+          "args": {
+            "hypothesis": "h1",
+            "reason": "superseded"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "predicate": "research.ledger.is_dropped",
+          "args": {
+            "hypothesis": "h1"
+          }
+        }
+      ],
+      "forbid": [
+        {
+          "predicate": "research.ledger.open",
+          "args": {
+            "hypothesis": "h1"
+          }
+        }
+      ]
+    },
+    {
+      "label": "one open hypothesis keeps only its own Case open",
+      "facts": [
+        {
+          "predicate": "research.ledger.hypothesis",
+          "args": {
+            "id": "h1",
+            "claim": "claim h1",
+            "case_id": "case-1"
+          }
+        },
+        {
+          "predicate": "research.ledger.hypothesis",
+          "args": {
+            "id": "h2",
+            "claim": "claim h2",
+            "case_id": "case-2"
+          }
+        },
+        {
+          "predicate": "research.ledger.refuted",
+          "args": {
+            "hypothesis": "h2"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "predicate": "research.ledger.case_open",
+          "args": {
+            "case_id": "case-1"
+          }
+        }
+      ],
+      "forbid": [
+        {
+          "predicate": "research.ledger.case_open",
+          "args": {
+            "case_id": "case-2"
+          }
+        }
+      ]
+    }
+  ],
+  "questions": [],
+  "notes": "supported and refuted are not owned by this package on purpose: an Agent decides a hypothesis with its own rule over the receipts and data that settle it, so its reasoning is recorded on the Board. open, case_open and is_dropped are owned here, so an Agent cannot redefine when a question is open."
+}
