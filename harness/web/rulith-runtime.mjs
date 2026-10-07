@@ -94,8 +94,11 @@ export async function apply(ctx, config = {}) {
     return reply;
   };
 
-  // 2. The six tools follow the selected Agent: registered once its token exists, replaced when it changes,
-  //    re-attached after the authority closed this connection (for example another client replaced it).
+  // 2. The six tools follow the selected Agent. They are registered once per Agent credential and stay registered while
+  //    the connection behind them is replaced. The bridge never retries: any transport failure closes its MCP
+  //    connection, whoever made the call (the panel's reads share it). A model mid-turn must not see its tools vanish
+  //    over that (2026-10-06: a read failing during a network blip closed the connection, the tools were unregistered
+  //    and re-registered, the model got "unknown tool" and gave up its turn).
   let current = null;
   let status = { state: 'starting' };
   const report = (state, detail = {}) => {
@@ -103,19 +106,50 @@ export async function apply(ctx, config = {}) {
     try { fs.writeFileSync(statusFile, JSON.stringify(status, null, 2)); } catch {}
   };
   const drop = () => { if (!current) return; for (const dispose of current.disposers) dispose(); current.bridge.close(); current = null; };
-  const attach = async (agent) => {
-    const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token: agent.token, identity() {} });
+  const connect = async (token) => {
+    const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, identity() {} });
     await bridge.initialize();
     const listed = await bridge.list();
     if (listed.nextCursor || listed.tools?.length !== 6 || !TOOLS.every((t) => listed.tools.some((x) => x.name === t)))
       throw new Error('MCP tool surface refused');
+    return { bridge, listed };
+  };
+  // The live connection for the current credential: a closed one is replaced (one attempt at a time).
+  let reconnecting = null;
+  const liveBridge = async () => {
+    if (!current) throw new Error('Rulith is not attached: choose an Agent with the Deep Rulith entry.');
+    if (!current.bridge.closed) return current.bridge;
+    const holder = current;
+    reconnecting ??= connect(holder.token).then(({ bridge }) => {
+      holder.bridge = bridge;
+      report('attached', { agentName: holder.agentName, tools: [...TOOLS], reconnectedAt: new Date().toISOString() });
+      return bridge;
+    }).finally(() => { reconnecting = null; });
+    return reconnecting;
+  };
+  const TRANSIENT = /^(MCP transport failed|MCP request refused|MCP response unreadable|MCP connection closed|connection_replaced)$/;
+  const READS = new Set(['QueryBoard', 'ReadArtifact']);
+  const invoke = async (name, args) => {
+    // Reaching Rulith fails before anything is sent: that error is reported as it is.
+    const bridge = await liveBridge();
+    try { return await bridge.call(name, args); }
+    catch (error) {
+      if (!TRANSIENT.test(String(error?.message ?? ''))) throw error;
+      // A read changes nothing, so it is asked once more on a fresh connection. A write's outcome is unknown: it is
+      // never repeated here, and the model is told how to learn it.
+      if (READS.has(name)) return (await liveBridge()).call(name, args);
+      throw new Error('The connection to Rulith was interrupted during this call; its outcome is unknown. Do not repeat it: QueryBoard shows its outcome in the operations strip.');
+    }
+  };
+  const attach = async (agent) => {
+    const { bridge, listed } = await connect(agent.token);
     const disposers = listed.tools.map((tool) => ctx.tools.register({
       name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
       output: { schema: {}, render(_args, value) { return [{ type: 'text', text: JSON.stringify(value) }]; } },
       async execute(args) {
-        const result = await bridge.call(tool.name, args);
+        const result = await invoke(tool.name, args);
         if (result.isError) throw new Error(JSON.stringify(result));
-        return awaitOutcome(bridge, tool.name, result);
+        return awaitOutcome({ call: invoke }, tool.name, result);
       },
     }));
     current = { token: agent.token, agentName: agent.agentName, bridge, disposers };
@@ -126,8 +160,11 @@ export async function apply(ctx, config = {}) {
     try {
       const agent = selectedAgent(home, chosenName());
       if (!agent) { drop(); report('no_agent', { hint: 'Sign in with the Deep Rulith entry and choose an Agent' }); }
-      else if (agent.token !== current?.token || current?.bridge.closed) {
+      else if (agent.token !== current?.token) {
         drop(); await attach(agent); report('attached', { agentName: agent.agentName, tools: [...TOOLS] });
+      } else if (current.bridge.closed) {
+        // Same credential: replace the connection, keep the tools.
+        try { await liveBridge(); } catch (error) { report('reconnecting', { error: String(error?.message ?? error).slice(0, 300) }); }
       }
     } catch (error) { drop(); report('failed', { error: String(error?.message ?? error).slice(0, 300) }); } finally { busy = false; }
   };
@@ -186,7 +223,7 @@ export async function apply(ctx, config = {}) {
   };
   const board = async () => {
     if (!current) return { available: false, tools: status };
-    const result = await current.bridge.call('QueryBoard', {});
+    const result = await invoke('QueryBoard', {});
     const text = (result.content ?? []).map((part) => part.text ?? '').join('');
     let view; try { view = JSON.parse(text); } catch { return { available: true, raw: text.slice(0, 4000) }; }
     return { available: true, agentName: current.agentName, view };
