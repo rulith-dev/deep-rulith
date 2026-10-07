@@ -191,8 +191,56 @@ export async function apply(ctx, config = {}) {
     let view; try { view = JSON.parse(text); } catch { return { available: true, raw: text.slice(0, 4000) }; }
     return { available: true, agentName: current.agentName, view };
   };
+  // The selected Agent's local Worker as its own Trace shows it: availability, lease and its latest steps. Read from the
+  // instance's event stream through the manager (the address carries the instance key and stays in this process);
+  // what reaches the page is shortened text, without keys or result bodies.
+  let traceLink = null;
+  const shortTool = (id) => String(id ?? '').replace(/^worker_[a-z0-9]+_/, '').replace(/_\d+$/, '').replace(/_[0-9a-f]{12}$/, '')
+    .replace(/^eng_/, 'eng.');
+  const traceRow = (event) => {
+    const at = event.at ?? event.t ?? null;
+    const row = (level, text) => ({ at, level, text: String(text).slice(0, 240) });
+    switch (event.type) {
+      case 'lease': return event.state === 'active' ? row('ok', `租约有效（第 ${event.workerGeneration} 代）`)
+        : event.state === 'generation-advanced' ? null : row('warn', `租约：${event.state}${event.errorCode ? `（${event.errorCode}）` : ''}`);
+      case 'availability': return row(event.state === 'online' ? 'ok' : 'warn', event.state === 'online' ? '在线' : `不在线（${event.state}）`);
+      case 'claimed': return row('info', `领取 ${shortTool(event.id)}`);
+      case 'tool-timing': return row(event.outcome === 'returned' ? 'info' : 'warn', `${shortTool(event.tool)} ${event.outcome === 'returned' ? '执行完' : event.outcome}，${((event.durationMs ?? 0) / 1000).toFixed(1)} 秒`);
+      case 'reported': return event.landed === false
+        ? row('error', `${shortTool(event.id)} 的结果没有送达（${event.reason ?? '未知'}）：这次调用会一直挂起，需要在 Console 里处理`)
+        : row(event.ok === false ? 'warn' : 'ok', `${shortTool(event.id)} ${event.ok === false ? '失败' : '已回报'}`);
+      case 'log': return event.stderr ? row('warn', event.line ?? '') : null;
+      case 'error': return row('warn', event.note ?? '');
+      default: return null;
+    }
+  };
+  const workerTrace = async () => {
+    const agent = selectedAgent(home, chosenName());
+    if (!agent) return { available: false };
+    if (traceLink?.instanceId !== agent.instanceId)
+      traceLink = { instanceId: agent.instanceId, url: new URL((await manager('/manager/instances/open', { instanceId: agent.instanceId, page: '/' })).url) };
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 1500);
+    let text = '';
+    try {
+      const response = await fetch(`${traceLink.url.origin}/events?k=${encodeURIComponent(traceLink.url.searchParams.get('k') ?? '')}&history=paged`, { signal: abort.signal });
+      if (!response.ok) throw new Error(`the Worker trace answered ${response.status}`);
+      const reader = response.body.getReader(); const decoder = new TextDecoder();
+      for (;;) { const { value, done } = await reader.read(); if (done) break; text += decoder.decode(value, { stream: true }); }
+    } catch (error) {
+      if (error.name !== 'AbortError') { traceLink = null; throw error; }
+    } finally { clearTimeout(timer); }
+    const events = text.split('\n\n').filter((chunk) => chunk.startsWith('data: '))
+      .map((chunk) => { try { return JSON.parse(chunk.slice(6)); } catch { return null; } })
+      .filter((event) => event?.src === 'worker');
+    const rows = events.map(traceRow).filter(Boolean);
+    const lastAvailability = [...events].reverse().find((event) => event.type === 'availability');
+    return { available: true, agentName: agent.agentName, state: lastAvailability?.state ?? 'unknown',
+      stuck: rows.some((row) => row.level === 'error'), events: rows.slice(-30).reverse() };
+  };
   const routes = {
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
+    'GET /rulith/api/worker': workerTrace,
     'POST /rulith/api/signin': async () => {
       const reply = await manager('/manager/device/start', { consoleUrl, name: os.hostname() });
       return { url: reply.device?.consoleUrl ?? '' };
