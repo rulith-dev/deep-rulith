@@ -80,6 +80,14 @@
         "args": [
           "case_id"
         ]
+      },
+      {
+        "id": "research.ledger.cites",
+        "as": "cites",
+        "args": [
+          "case_id",
+          "from_case_id"
+        ]
       }
     ],
     "imports": [
@@ -365,6 +373,55 @@
             "unit": "?u",
             "source": "?s",
             "case_id": "?k"
+          }
+        }
+      ],
+      "then": [
+        {
+          "predicate": "case_datum",
+          "args": {
+            "case_id": "?k",
+            "name": "?n",
+            "value": "?v",
+            "unit": "?u",
+            "source": "?s"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ledger_cited_case_data",
+      "label": "Data of a cited Case is shown with the citing Case.",
+      "when": [
+        {
+          "predicate": "root",
+          "args": {
+            "node": "?r"
+          }
+        },
+        {
+          "predicate": "case_context",
+          "args": {
+            "root": "?r",
+            "case_type": "?t",
+            "case_id": "?k"
+          }
+        },
+        {
+          "predicate": "cites",
+          "args": {
+            "case_id": "?k",
+            "from_case_id": "?f"
+          }
+        },
+        {
+          "predicate": "datum",
+          "args": {
+            "name": "?n",
+            "value": "?v",
+            "unit": "?u",
+            "source": "?s",
+            "case_id": "?f"
           }
         }
       ],

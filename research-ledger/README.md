@@ -9,6 +9,7 @@ programming; Deep Rulith uses it inside exploration Cases.
 | `research.ledger.hypothesis(id, claim, case_id)` | the Agent, before an experiment |
 | `research.ledger.datum(name, value, unit, source, case_id)` | the Agent, for every number it relies on, naming its source |
 | `research.ledger.dropped(hypothesis, reason)` | the Agent, for a direction it gives up |
+| `research.ledger.cites(case_id, from_case_id)` | the Agent, to use an earlier Case's data in this Case instead of recording it again (0.3.0, D-1008c) |
 | `research.ledger.supported(hypothesis)`, `research.ledger.refuted(hypothesis)` | the Agent's own rules (`add_axiom`) over the receipts and data that settle it, so the reasoning is on the Board |
 | `research.ledger.item(case_id, hypothesis, claim, state)`, `research.ledger.case_datum(...)`, `research.ledger.case_open`, `research.ledger.is_dropped` | this package's rules only; the Agent cannot assert or redefine them |
 

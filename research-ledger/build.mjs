@@ -22,8 +22,9 @@ const caseOf = [
   { predicate: 'case_context', args: { root: '?r', case_type: '?t', case_id: '?k' } },
 ];
 const program = {
-  // Published as research_ledger_2: a Board that once had research_ledger 0.1.0 refuses any other content under that
-  // package name (Rulith emits every Release of a package as Kernel version 1, and the Kernel freezes name/version).
+  // Published as research_ledger_2 (a Board that once had research_ledger 0.1.0 refused any other content under that
+  // name while Rulith emitted every Release as Kernel version 1). Since the 2026-10-07 Gateway the version follows the
+  // content, so new versions of research_ledger_2 upgrade in place.
   id: 'research_ledger_2',
   title: 'Research ledger',
   summary: 'Keeps an investigation on the Board: hypotheses with their Case, the data they rest on, dropped directions, and which hypotheses are still open. Each Case shows its ledger as research.ledger.item and research.ledger.case_datum rows.',
@@ -38,6 +39,7 @@ const program = {
       { id: 'research.ledger.item', as: 'item', args: ['case_id', 'hypothesis', 'claim', 'state'] },
       { id: 'research.ledger.case_datum', as: 'case_datum', args: ['case_id', 'name', 'value', 'unit', 'source'] },
       { id: 'research.ledger.case_open', as: 'case_open', args: ['case_id'] },
+      { id: 'research.ledger.cites', as: 'cites', args: ['case_id', 'from_case_id'] },
     ],
     imports: [{ id: 'root', as: 'root' }, { id: 'case_context', as: 'case_context' }],
   },
@@ -71,6 +73,13 @@ const program = {
     { id: 'ledger_case_data', label: 'Each datum recorded for a Case is shown with that Case.',
       when: [...caseOf, { predicate: 'datum', args: { name: '?n', value: '?v', unit: '?u', source: '?s', case_id: '?k' } }],
       then: [{ predicate: 'case_datum', args: { case_id: '?k', name: '?n', value: '?v', unit: '?u', source: '?s' } }] },
+    // D-1008c (O5c): a later Case uses an earlier Case's data by citing it, instead of recording the numbers again.
+    // The datum facts stay on the Board after the earlier Case closes; the citing Case shows them as its own rows, and
+    // each such row's evidence names the cites fact, so the dependency stays on the Board.
+    { id: 'ledger_cited_case_data', label: 'Data of a cited Case is shown with the citing Case.',
+      when: [...caseOf, { predicate: 'cites', args: { case_id: '?k', from_case_id: '?f' } },
+        { predicate: 'datum', args: { name: '?n', value: '?v', unit: '?u', source: '?s', case_id: '?f' } }],
+      then: [{ predicate: 'case_datum', args: { case_id: '?k', name: '?n', value: '?v', unit: '?u', source: '?s' } }] },
   ],
   acceptance: [],
   actions: [],
@@ -80,8 +89,15 @@ const CTX = (k = 'case-1', r = 'root-1') => [{ predicate: 'root', args: { node: 
   { predicate: 'case_context', args: { root: r, case_type: 'exploration', case_id: k } }];
 const H = (id, k = 'case-1') => ({ predicate: 'research.ledger.hypothesis', args: { id, claim: `claim ${id}`, case_id: k } });
 const ITEM = (h, state, k = 'case-1') => ({ predicate: 'research.ledger.item', args: { case_id: k, hypothesis: h, claim: `claim ${h}`, state } });
+// The mechanical checker needs a Case contract with an acceptance bridge to its root (it refuses a certified /1
+// contract without one). Both exist only in the draft; the published program.json keeps acceptance empty.
+const checkProgram = { ...program,
+  vocabulary: { ...program.vocabulary, imports: [...program.vocabulary.imports, { id: 'acceptance', as: 'acceptance' }, { id: 'acceptance_met', as: 'acceptance_met' }] },
+  acceptance: [{ id: 'check_only_bridge', label: 'Check-only bridge from the checker contract to its root.',
+  when: [{ predicate: 'acceptance', args: { node: '?node', test: '?k' } }, { predicate: 'case_open', args: { case_id: '?k' } }],
+  then: [{ predicate: 'acceptance_met', args: { node: '?node' } }] }] };
 const draft = {
-  program,
+  program: checkProgram,
   // The checker needs one Case contract; this one exists only so the rules and examples can be checked. The
   // published package is program.json alone: the ledger is used inside other Case Types (for example exploration).
   caseContracts: [{ format: 'rulith-case-contract/1', caseType: 'research_ledger_check', title: 'Research ledger mechanical check',
@@ -97,6 +113,7 @@ const draft = {
     cite('ledger_item_dropped', 'A dropped hypothesis is shown as dropped.'),
     cite('ledger_case_with_open_hypothesis', 'A Case with an open hypothesis still has an open question.'),
     cite('ledger_case_data', 'Each datum recorded for a Case is shown with that Case.'),
+    cite('ledger_cited_case_data', 'Data of a cited Case is shown with the citing Case.'),
   ],
   examples: [
     { label: 'an undecided hypothesis is open and keeps its Case open', facts: [...CTX(), H('h1')],
@@ -112,6 +129,10 @@ const draft = {
       expect: [{ predicate: 'research.ledger.case_open', args: { case_id: 'case-1' } }], forbid: [{ predicate: 'research.ledger.case_open', args: { case_id: 'case-2' } }] },
     { label: 'a datum is shown with its Case', facts: [...CTX(), { predicate: 'research.ledger.datum', args: { name: 'gate_up_ms', value: '41.2', unit: 'ms', source: 'tmp/qk/base.json', case_id: 'case-1' } }],
       expect: [{ predicate: 'research.ledger.case_datum', args: { case_id: 'case-1', name: 'gate_up_ms', value: '41.2', unit: 'ms', source: 'tmp/qk/base.json' } }], forbid: [] },
+    { label: 'data of a cited Case is shown with the citing Case',
+      facts: [...CTX('case-2', 'root-2'), { predicate: 'research.ledger.cites', args: { case_id: 'case-2', from_case_id: 'case-1' } },
+        { predicate: 'research.ledger.datum', args: { name: 'prefill_tok_s', value: '812', unit: 'tok/s', source: 'logs/pinned-prefill.json', case_id: 'case-1' } }],
+      expect: [{ predicate: 'research.ledger.case_datum', args: { case_id: 'case-2', name: 'prefill_tok_s', value: '812', unit: 'tok/s', source: 'logs/pinned-prefill.json' } }], forbid: [] },
     { label: 'nothing is shown for a Case without its context', facts: [H('h1', 'case-9')],
       expect: [], forbid: [ITEM('h1', 'open', 'case-9')] },
   ],

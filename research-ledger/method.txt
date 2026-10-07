@@ -11,3 +11,5 @@ A hypothesis a rule derives as refuted is shown as refuted.
 A dropped hypothesis is shown as dropped.
 A Case with an open hypothesis still has an open question.
 Each datum recorded for a Case is shown with that Case.
+
+Data of a cited Case is shown with the citing Case. A later Case cites an earlier one instead of recording its numbers again; the cited data keeps its own source, and the citation stays in the evidence of every row it brings in.

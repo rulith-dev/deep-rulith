@@ -81,6 +81,14 @@
           "args": [
             "case_id"
           ]
+        },
+        {
+          "id": "research.ledger.cites",
+          "as": "cites",
+          "args": [
+            "case_id",
+            "from_case_id"
+          ]
         }
       ],
       "imports": [
@@ -91,6 +99,14 @@
         {
           "id": "case_context",
           "as": "case_context"
+        },
+        {
+          "id": "acceptance",
+          "as": "acceptance"
+        },
+        {
+          "id": "acceptance_met",
+          "as": "acceptance_met"
         }
       ]
     },
@@ -381,9 +397,86 @@
             }
           }
         ]
+      },
+      {
+        "id": "ledger_cited_case_data",
+        "label": "Data of a cited Case is shown with the citing Case.",
+        "when": [
+          {
+            "predicate": "root",
+            "args": {
+              "node": "?r"
+            }
+          },
+          {
+            "predicate": "case_context",
+            "args": {
+              "root": "?r",
+              "case_type": "?t",
+              "case_id": "?k"
+            }
+          },
+          {
+            "predicate": "cites",
+            "args": {
+              "case_id": "?k",
+              "from_case_id": "?f"
+            }
+          },
+          {
+            "predicate": "datum",
+            "args": {
+              "name": "?n",
+              "value": "?v",
+              "unit": "?u",
+              "source": "?s",
+              "case_id": "?f"
+            }
+          }
+        ],
+        "then": [
+          {
+            "predicate": "case_datum",
+            "args": {
+              "case_id": "?k",
+              "name": "?n",
+              "value": "?v",
+              "unit": "?u",
+              "source": "?s"
+            }
+          }
+        ]
       }
     ],
-    "acceptance": [],
+    "acceptance": [
+      {
+        "id": "check_only_bridge",
+        "label": "Check-only bridge from the checker contract to its root.",
+        "when": [
+          {
+            "predicate": "acceptance",
+            "args": {
+              "node": "?node",
+              "test": "?k"
+            }
+          },
+          {
+            "predicate": "case_open",
+            "args": {
+              "case_id": "?k"
+            }
+          }
+        ],
+        "then": [
+          {
+            "predicate": "acceptance_met",
+            "args": {
+              "node": "?node"
+            }
+          }
+        ]
+      }
+    ],
     "actions": []
   },
   "caseContracts": [
@@ -479,6 +572,15 @@
         "kind": "character-range",
         "start": 792,
         "end": 847
+      }
+    },
+    {
+      "ruleId": "ledger_cited_case_data",
+      "quote": "Data of a cited Case is shown with the citing Case.",
+      "locator": {
+        "kind": "character-range",
+        "start": 849,
+        "end": 900
       }
     }
   ],
@@ -814,6 +916,55 @@
             "value": "41.2",
             "unit": "ms",
             "source": "tmp/qk/base.json"
+          }
+        }
+      ],
+      "forbid": []
+    },
+    {
+      "label": "data of a cited Case is shown with the citing Case",
+      "facts": [
+        {
+          "predicate": "root",
+          "args": {
+            "node": "root-2"
+          }
+        },
+        {
+          "predicate": "case_context",
+          "args": {
+            "root": "root-2",
+            "case_type": "exploration",
+            "case_id": "case-2"
+          }
+        },
+        {
+          "predicate": "research.ledger.cites",
+          "args": {
+            "case_id": "case-2",
+            "from_case_id": "case-1"
+          }
+        },
+        {
+          "predicate": "research.ledger.datum",
+          "args": {
+            "name": "prefill_tok_s",
+            "value": "812",
+            "unit": "tok/s",
+            "source": "logs/pinned-prefill.json",
+            "case_id": "case-1"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "predicate": "research.ledger.case_datum",
+          "args": {
+            "case_id": "case-2",
+            "name": "prefill_tok_s",
+            "value": "812",
+            "unit": "tok/s",
+            "source": "logs/pinned-prefill.json"
           }
         }
       ],
