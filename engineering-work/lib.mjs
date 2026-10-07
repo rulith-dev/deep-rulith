@@ -61,6 +61,17 @@ export function save(file, value) {
 export function pin(ctx, id) {
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) refuse('spec refused');
   const file = path.join(ctx.home, 'specs', `${id}.json`);
+  // A spec the agent wrote itself (spec_id self-<name>, from <project>/.deep-rulith/measure/<name>.json) is frozen into
+  // the kit home on first use and never changes afterwards: runs of one spec_id stay comparable without waiting for the
+  // owner. The self- prefix stays on every receipt, so its provenance is visible; the owner's specs have no prefix.
+  if (id.startsWith('self-') && !fs.existsSync(file)) {
+    const source = fenced(ctx.root, `.deep-rulith/measure/${id.slice(5)}.json`);
+    if (!fs.existsSync(source)) refuse('spec refused');
+    const bytes = fs.readFileSync(source);
+    if (bytes.length > 16384) refuse('spec refused');
+    try { JSON.parse(bytes); } catch { refuse('spec refused'); }
+    try { fs.writeFileSync(file, bytes, { flag: 'wx' }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  }
   if (!inside(ctx.home, fs.realpathSync(file))) refuse('spec refused');
   const bytes = fs.readFileSync(file);
   return { spec: JSON.parse(bytes), digest: sha(bytes) };

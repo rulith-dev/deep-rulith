@@ -82,6 +82,12 @@ An interpreted harness (for example a Python script) names its `interpreter` (a 
 absolute path); the command is then `[interpreter, binary, ...]`. See `pinned-measure.example.json`
 and `pinned-measure-interpreted.example.json`.
 
+The agent may pin a measurement itself instead of waiting for the owner: it writes the spec to
+`<project>/.deep-rulith/measure/<name>.json` and runs `eng.measure_pinned` with `spec_id`
+`self-<name>`. The first run copies the spec to `<kit home>/specs/self-<name>.json`, where it never
+changes; later edits of the project copy are ignored. The `self-` prefix stays on every receipt, so the
+owner can review such specs afterwards and tell them from the owner's own.
+
 ## Closing a Case
 
 Declare a goal leaf under the Case root with its acceptance, propose with `add_axiom` that the

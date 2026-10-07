@@ -139,6 +139,22 @@ test('an interpreted harness writes a result file; the pinned path to one number
   fs.writeFileSync(path.join(f.home,'specs','other.json'),JSON.stringify({...spec,command:['python','tools/bench.mjs']}));
   await assert.rejects(f.call('measure_pinned',{spec_id:'other'}),/spec refused/);
 });
+test('a self- spec comes from the project, is frozen into the kit home on first use and never changes',async t=>{
+  const f=fixture(t); fs.mkdirSync(path.join(f.root,'logs')); fs.mkdirSync(path.join(f.root,'.deep-rulith','measure'),{recursive:true});
+  const write=v=>fs.writeFileSync(path.join(f.root,'bench.mjs'),`import fs from 'node:fs'; fs.writeFileSync('logs/r.json',JSON.stringify({tps:${v}}))`);
+  write(2.5); fs.writeFileSync(path.join(f.root,'config'),'pinned'); fs.writeFileSync(path.join(f.root,'candidate'),'c');
+  const spec={interpreter:'node',command:['node','bench.mjs'],binary:'bench.mjs',candidate_binary:'candidate',workload:'config',config:'config',
+    binary_digest:fileDigest(path.join(f.root,'bench.mjs')),workload_digest:sha('pinned'),config_digest:sha('pinned'),
+    parser:{kind:'json_file_number_milli',file:'logs/r.json',path:['tps']},unit:'tokens_per_second',repeats:1,output_dirs:['logs']};
+  const own=path.join(f.root,'.deep-rulith','measure','fast.json'); fs.writeFileSync(own,JSON.stringify(spec));
+  await assert.rejects(f.call('measure_pinned',{spec_id:'self-missing'}),/spec refused/);
+  const first=await f.call('measure_pinned',{spec_id:'self-fast'}); assert.deepEqual(first.rows.map(r=>[r.spec_id,r.value_milli]),[['self-fast',2500]]);
+  assert.ok((await f.call('tree_state',{})).measure_specs.includes('self-fast'));
+  // Editing the project copy afterwards changes nothing: the frozen spec still governs (its digest pins the old script).
+  fs.writeFileSync(own,JSON.stringify({...spec,repeats:2}));
+  const again=await f.call('measure_pinned',{spec_id:'self-fast'}); assert.equal(again.rows.length,1); assert.equal(again.rows[0].spec_digest,first.rows[0].spec_digest);
+  write(9); await assert.rejects(f.call('measure_pinned',{spec_id:'self-fast'}),/binary digest changed/);
+});
 test('read pages a long file: where the unread part starts, whether it is complete, and on which line the window begins',async t=>{
   const f=fixture(t); const lines=Array.from({length:200},(_,i)=>`line ${String(i+1).padStart(3,'0')} ${'x'.repeat(14)}`).join('\n'); // 24 bytes per line
   fs.writeFileSync(path.join(f.root,'long.txt'),lines); const size=Buffer.byteLength(lines);
