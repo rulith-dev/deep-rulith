@@ -43,7 +43,7 @@ const openEntryOf = (strip, tool) => {
  * own entry settles, then answer with that read: it carries the outcome in full the first time it is shown. Waiting
  * for a person's decision is not waited on. The wait ends at RULITH_DSH_WAIT_SECONDS if set (0 or unset: until settled).
  */
-export async function awaitOutcome(bridge, tool, result, { pollMs = 10_000, waitSeconds = Number(process.env.RULITH_DSH_WAIT_SECONDS || 0) } = {}) {
+export async function awaitOutcome(bridge, tool, result, { pollMs = 2_000, waitSeconds = Number(process.env.RULITH_DSH_WAIT_SECONDS || 0) } = {}) {
   const first = parsed(result);
   const own = openEntryOf(first?.operations, tool);
   if (!own || own.state !== 'running') return result;

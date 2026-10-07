@@ -3,8 +3,22 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { settings, context, fenced, tree, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
+import { settings, context, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
+const READ_TEXT_BYTES = 5000;
+// The bytes a text takes inside the Worker's receipt: once as adapter output JSON, once more as a JSON string.
+const encoded = (text) => Buffer.byteLength(JSON.stringify(JSON.stringify(text)));
+// The longest prefix of `bytes` that ends on a character boundary and whose text fits `budget` encoded bytes.
+function fit(bytes, budget) {
+  let low = 0, high = bytes.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (encoded(bytes.subarray(0, mid).toString('utf8')) <= budget) low = mid; else high = mid - 1;
+  }
+  let end = low;
+  while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end);
+}
 
 export async function perform(tool, args = {}, env = process.env) {
   const ctx = context(env);
@@ -29,24 +43,35 @@ export async function perform(tool, args = {}, env = process.env) {
         const target = file(); const size = fs.statSync(target).size; const fd = fs.openSync(target,'r');
         const offset = args.offset ?? 0;
         if (!Number.isSafeInteger(offset) || offset < 0 || offset > size) { fs.closeSync(fd); refuse('offset refused'); }
-        // Without an offset: the file's first and last KiB. With one: the 2 KiB window from it, as two adjacent halves
-        // (head, then tail from offset + 1024). Either way the text says where the unread part starts and on which line.
+        // A read returns as much text as the receipt can carry. The receipt holds the adapter's output as one JSON
+        // string inside the Worker's own JSON (8 KiB inline on rulith.ai), so the text is measured encoded twice and
+        // the window ends where that measure reaches READ_TEXT_BYTES: about 5 KB of plain code, less where the text
+        // is mostly quotes, backslashes or line breaks. Without an offset: the start of the file, plus its last KiB
+        // when the rest does not fit; with one: the window from it. The text says where the unread part starts.
         const paged = args.offset !== undefined;
-        const end = paged ? Math.min(size, offset + 2048) : size;
-        const headEnd = Math.min(end, offset + 1024);
-        const tailOffset = paged ? headEnd : Math.max(headEnd, size - 1024);
-        const head = Buffer.alloc(headEnd - offset); const tail = Buffer.alloc(end - tailOffset);
-        try { fs.readSync(fd,head,0,head.length,offset); if (tail.length) fs.readSync(fd,tail,0,tail.length,tailOffset); } finally { fs.closeSync(fd); }
-        rows = [{ path: path.relative(ctx.root, target).replaceAll('\\', '/'), digest: fileDigest(target), bytes: size, offset, tail_offset: tailOffset }];
-        // Unread: after the window when paging; between the first and last KiB otherwise.
-        const nextOffset = paged ? (end < size ? end : null) : (tailOffset > headEnd ? headEnd : null);
-        text = { head: clip(head), tail: tail.length ? clip(tail,true) : '', next_offset: nextOffset, complete: nextOffset === null,
+        const tailOffset = paged ? size : Math.max(offset, size - 1024);
+        const tail = Buffer.alloc(size - tailOffset);
+        const window = Buffer.alloc(Math.min(size - offset, 3 * READ_TEXT_BYTES));
+        try { fs.readSync(fd, window, 0, window.length, offset); if (tail.length) fs.readSync(fd, tail, 0, tail.length, tailOffset); } finally { fs.closeSync(fd); }
+        const whole = !paged && window.length === size && encoded(window.toString('utf8')) <= READ_TEXT_BYTES;
+        let tailText = paged || whole ? '' : clip(tail, true);
+        // A tail of mostly escaped characters is shortened from its start, so the window keeps most of the budget.
+        while (encoded(tailText) > READ_TEXT_BYTES / 4) tailText = tailText.slice(Math.ceil(tailText.length / 10));
+        const head = whole ? window : fit(paged ? window : window.subarray(0, Math.max(0, tailOffset - offset)), READ_TEXT_BYTES - encoded(tailText));
+        const headEnd = offset + head.length;
+        const nextOffset = headEnd < (paged || whole ? size : tailOffset) ? headEnd : null;
+        rows = [{ path: path.relative(ctx.root, target).replaceAll('\\', '/'), digest: fileDigest(target), bytes: size, offset,
+          tail_offset: paged || whole ? headEnd : tailOffset }];
+        text = { head: head.toString('utf8'), tail: tailText, next_offset: nextOffset, complete: nextOffset === null,
           start_line: lineAt(target, offset) }; break;
       }
       case 'search': {
         if (typeof args.query !== 'string' || !args.query || Buffer.byteLength(args.query) > 1024) refuse('query refused');
         const prefix = path.relative(ctx.root, file()).replaceAll('\\','/');
-        for (const name of Object.keys(before.files)) {
+        // A folder the tree digest skips (settings treeExclude, for example a reference checkout under tmp/) is
+        // searched when the path names it or something inside it.
+        const names = excluded(ctx, prefix) ? filesUnder(ctx, prefix) : Object.keys(before.files);
+        for (const name of names) {
           if (rows.length === 128) { more = true; break; }
           if (name.endsWith('/') || (prefix && name !== prefix && !name.startsWith(`${prefix}/`))) continue;
           const target = fenced(ctx.root, name);
@@ -60,7 +85,9 @@ export async function perform(tool, args = {}, env = process.env) {
       case 'patch_file': {
         const target = file(); const content = textLimit(args.text);
         const original = fs.existsSync(target) ? fs.readFileSync(target) : Buffer.alloc(0);
-        if (typeof args.expect_digest !== 'string' || args.expect_digest !== sha(original)) refuse('file digest changed');
+        // expect_digest is the digest of the file being replaced; an empty one creates a file that must not exist yet.
+        if (typeof args.expect_digest !== 'string') refuse('file digest changed');
+        if (args.expect_digest === '' ? fs.existsSync(target) || tool === 'patch_file' : args.expect_digest !== sha(original)) refuse('file digest changed');
         let output = content;
         if (tool === 'patch_file') {
           const old = textLimit(args.old_text);
@@ -171,7 +198,9 @@ export async function perform(tool, args = {}, env = process.env) {
       }
       default: refuse('tool refused');
     }
-    const after = tree(ctx);
+    // A read changes nothing, so the tree after it is the tree before it; a change made meanwhile by someone else is
+    // seen by the next call's walk. (One walk of a large tree takes seconds.)
+    const after = ['list', 'read', 'search', 'tree_state'].includes(tool) ? before : tree(ctx);
     if (tool === 'run') { rows[0].tree_after = after.digest; rows[0].changed_files = JSON.stringify(changed(before, after)); }
     const mutated = state.digest !== after.digest;
     const gen = state.gen + (mutated ? 1 : 0);
@@ -231,7 +260,10 @@ export async function main(tool) {
   } catch (error) {
     // Never echo paths, arbitrary exception messages, commands, or spec contents.
     const messages = ['path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll and stop accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted'];
-    process.stdout.write(JSON.stringify({ rows: [], verdict: messages.includes(error.message) ? error.message : 'adapter failed' }));
+    const verdict = messages.includes(error.message) ? error.message : 'adapter failed';
+    process.stdout.write(JSON.stringify({ rows: [], verdict }));
+    // The Worker reports a failed run with what the command wrote to stderr: the verdict goes there too.
+    process.stderr.write(verdict);
     process.exitCode = 2;
   }
 }

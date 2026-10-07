@@ -92,6 +92,29 @@ export function exclusions(ctx) {
   }
   return [...names].sort();
 }
+// A skip entry is a path from the project root, or **/<name> for every folder of that name at any depth
+// (dependency folders such as node_modules).
+export function skipped(skip, name) {
+  const parts = name.split('/');
+  return skip.some(s => s.startsWith('**/') ? parts.includes(s.slice(3)) : name === s || name.startsWith(`${s}/`));
+}
+export function excluded(ctx, name) { return name !== '' && skipped(exclusions(ctx), name); }
+// The files under a folder the tree digest skips, walked on demand (at most 20000; .git and **/ folders skipped).
+export function filesUnder(ctx, prefix) {
+  const skip = exclusions(ctx).filter(s => s.startsWith('**/'));
+  const start = fenced(ctx.root, prefix);
+  if (!fs.statSync(start).isDirectory()) return [prefix];
+  const out = []; const queue = [prefix];
+  while (queue.length && out.length < 20000) {
+    const dir = queue.shift();
+    for (const entry of fs.readdirSync(fenced(ctx.root, dir), { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const name = `${dir}/${entry.name}`;
+      if (entry.name === '.git' || entry.isSymbolicLink() || skipped(skip, name)) continue;
+      if (entry.isDirectory()) queue.push(name); else if (entry.isFile() && out.length < 20000) out.push(name);
+    }
+  }
+  return out;
+}
 export function tree(ctx) {
   const skip = exclusions(ctx);
   const files = {};
@@ -107,7 +130,7 @@ export function tree(ctx) {
       const name = prefix + entry.name;
       // Every nested repository's .git is skipped, not only the top one.
       if (entry.name === '.git') continue;
-      if (skip.some(s => name === s || name.startsWith(`${s}/`))) continue;
+      if (skipped(skip, name)) continue;
       const file = fenced(ctx.root, name);
       // Links are recorded, never followed (cycles and aliases do not duplicate files).
       if (entry.isSymbolicLink()) files[name] = sha(`link:${fs.readlinkSync(path.join(dir, entry.name))}`);

@@ -104,7 +104,7 @@ test('list and search keep their rows small enough to report twice in one receip
 });
 test('read, list and literal search produce observations with bounded text',async t=>{
   const f=fixture(t); fs.writeFileSync(path.join(f.root,'a.txt'),'needle\n'+'x'.repeat(10000));
-  const read=await f.call('read',{path:'a.txt'}); assert.ok(Buffer.byteLength(read.head)<=1024); assert.ok(Buffer.byteLength(read.tail)<=1024);
+  const read=await f.call('read',{path:'a.txt'}); assert.ok(Buffer.byteLength(read.head)<=5000); assert.equal(Buffer.byteLength(read.tail),1024); assert.equal(read.next_offset,Buffer.byteLength(read.head));
   assert.ok((await f.call('list',{path:'.'})).rows.some(r=>r.path==='a.txt'));
   assert.equal((await f.call('search',{path:'.',query:'needle'})).rows[0].line,1);
   assert.equal((await f.call('read',{path:'a.txt',offset:2000})).rows[0].offset,2000);
@@ -156,14 +156,31 @@ test('a self- spec comes from the project, is frozen into the kit home on first 
   write(9); await assert.rejects(f.call('measure_pinned',{spec_id:'self-fast'}),/binary digest changed/);
 });
 test('read pages a long file: where the unread part starts, whether it is complete, and on which line the window begins',async t=>{
-  const f=fixture(t); const lines=Array.from({length:200},(_,i)=>`line ${String(i+1).padStart(3,'0')} ${'x'.repeat(14)}`).join('\n'); // 24 bytes per line
-  fs.writeFileSync(path.join(f.root,'long.txt'),lines); const size=Buffer.byteLength(lines);
-  const first=await f.call('read',{path:'long.txt'}); assert.equal(first.next_offset,1024); assert.equal(first.complete,false); assert.equal(first.start_line,1);
-  const page=await f.call('read',{path:'long.txt',offset:1024}); assert.equal(page.next_offset,3072); assert.equal(page.complete,false);
-  assert.equal(page.start_line,Math.floor(1024/24)+1); assert.equal(page.rows[0].tail_offset,2048);
-  assert.equal(Buffer.byteLength(page.head)+Buffer.byteLength(page.tail),2048);
-  const last=await f.call('read',{path:'long.txt',offset:size-100}); assert.equal(last.next_offset,null); assert.equal(last.complete,true); assert.equal(last.tail,'');
-  fs.writeFileSync(path.join(f.root,'short.txt'),'tiny'); const short=await f.call('read',{path:'short.txt'}); assert.equal(short.complete,true); assert.equal(short.next_offset,null);
+  const f=fixture(t); const lines=Array.from({length:600},(_,i)=>`line ${String(i+1).padStart(3,'0')} ${'x'.repeat(14)}`).join('\n'); // 24 bytes per line
+  fs.writeFileSync(path.join(f.root,'long.txt'),lines);
+  const first=await f.call('read',{path:'long.txt'}); assert.equal(first.complete,false); assert.equal(first.start_line,1);
+  assert.equal(first.next_offset,Buffer.byteLength(first.head)); assert.equal(first.tail,lines.slice(-1024)); assert.ok(first.next_offset>3000,String(first.next_offset));
+  // Paging from 0 by next_offset gives the file back exactly, each window with the line it starts on.
+  let at=0, text='', pages=0;
+  for(;;){ const page=await f.call('read',{path:'long.txt',offset:at}); pages++;
+    assert.equal(page.start_line,lines.slice(0,at).split('\n').length); assert.equal(page.tail,''); text+=page.head;
+    if(page.complete){ assert.equal(page.next_offset,null); break; }
+    assert.equal(page.next_offset,at+Buffer.byteLength(page.head)); at=page.next_offset; }
+  assert.equal(text,lines); assert.ok(pages<=4,`${pages} pages`);
+  fs.writeFileSync(path.join(f.root,'short.txt'),'tiny'); const short=await f.call('read',{path:'short.txt'}); assert.equal(short.complete,true); assert.equal(short.next_offset,null); assert.equal(short.head,'tiny');
+});
+test('a read receipt fits the 8 KiB inline budget whatever the text, and never splits a character',async t=>{
+  const f=fixture(t); const unit=['"','\\','\n','\t',String.fromCharCode(1),' 引号「中文」','\u{1F600}',' {"k":"v"}','\r\n'].join('');
+  const nasty=unit.repeat(400); fs.writeFileSync(path.join(f.root,'nasty.txt'),nasty);
+  fs.writeFileSync(path.join(f.root,'control.bin'),String.fromCharCode(1).repeat(9000));
+  const control=await f.call('read',{path:'control.bin'}); assert.ok(Buffer.byteLength(JSON.stringify({result:JSON.stringify(control)}))<=7000);
+  const tool=JSON.parse(fs.readFileSync(new URL('../../engineering-work/worker-tools.json',import.meta.url))).tools['eng.read@1'];
+  for(const args of [{path:'nasty.txt'},{path:'nasty.txt',offset:0}]){
+    const out=await f.call('read',args); const report={result:JSON.stringify(out),reason:'',facts:resultFactsFromRows(tool,out.rows)};
+    const bytes=Buffer.byteLength(JSON.stringify(report)); assert.ok(bytes<=8192,String(bytes)); assert.ok(!out.head.includes('\uFFFD')); }
+  let at=0, text='';
+  for(;;){ const page=await f.call('read',{path:'nasty.txt',offset:at}); text+=page.head; if(page.complete) break; at=page.next_offset; }
+  assert.equal(text,nasty);
 });
 test('run records output hashes and changes but printed numbers remain text',async t=>{
   const f=fixture(t); fs.writeFileSync(path.join(f.root,'run.mjs'),"import fs from 'node:fs'; fs.writeFileSync('changed','x'); console.log('value_milli=9000'); console.error('err')");
@@ -263,4 +280,24 @@ test('owner settings relax the classifier: outside paths, installs, deletes and 
     await assert.rejects(f.call('run', { command: always, cwd: '.' }), /command refused/);
   fs.writeFileSync(settingsFile, JSON.stringify({ allow: ['everything'] }));
   await assert.rejects(f.call('run', { command: 'node cat.mjs cat.mjs', cwd: '.' }), /settings refused/);
+});
+test('an empty expect_digest creates a new file and refuses to replace one; a write still advances the generation',async t=>{
+  const f=fixture(t);
+  const made=await f.call('write_file',{path:'new.txt',text:'hello',expect_digest:''}); assert.equal(made.rows[0].digest,sha('hello')); assert.equal(made.rows[0].to_gen,1);
+  await assert.rejects(f.call('write_file',{path:'new.txt',text:'again',expect_digest:''}),/file digest changed/);
+  await assert.rejects(f.call('patch_file',{path:'new.txt',old_text:'hello',text:'x',expect_digest:''}),/file digest changed/);
+  // A read does not walk the tree again afterwards, and reports no generation step of its own.
+  const read=await f.call('read',{path:'new.txt'}); assert.equal(read.rows[0].from_gen,-1);
+});
+test('**/name skips that folder at any depth; a skipped folder is still searched when the path names it',async t=>{
+  const f=fixture(t); fs.writeFileSync(path.join(f.home,'settings.json'),JSON.stringify({treeExclude:['**/node_modules','tmp']}));
+  fs.mkdirSync(path.join(f.root,'a','node_modules'),{recursive:true}); fs.writeFileSync(path.join(f.root,'a','node_modules','dep.js'),'needle');
+  fs.mkdirSync(path.join(f.root,'tmp','gufo','src'),{recursive:true}); fs.writeFileSync(path.join(f.root,'tmp','gufo','src','gemm.cu'),'x\nneedle here');
+  fs.writeFileSync(path.join(f.root,'a','own.js'),'needle');
+  const state=await f.call('tree_state',{}); assert.ok(state.rows[0].tree_digest);
+  assert.deepEqual((await f.call('search',{path:'.',query:'needle'})).rows.map(r=>r.path),['a/own.js']);
+  assert.deepEqual((await f.call('search',{path:'tmp/gufo',query:'needle'})).rows.map(r=>[r.path,r.line]),[['tmp/gufo/src/gemm.cu',2]]);
+  // A dependency folder inside the skipped folder stays skipped.
+  fs.mkdirSync(path.join(f.root,'tmp','gufo','node_modules')); fs.writeFileSync(path.join(f.root,'tmp','gufo','node_modules','x.js'),'needle');
+  assert.equal((await f.call('search',{path:'tmp',query:'needle'})).rows.length,1);
 });

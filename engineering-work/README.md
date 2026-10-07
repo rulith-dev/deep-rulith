@@ -50,9 +50,16 @@ it only for a project you trust.
 ## Behaviour
 
 - `eng.run` takes a command line and a project-relative `cwd`.
-- `eng.read(path)` gives the first and last KiB; `eng.read(path, offset)` gives the 2 KiB from `offset`
-  as two adjacent halves (`head`, then `tail`). Both say `next_offset` (where the unread part starts, or
-  null), `complete` and `start_line`.
+- `eng.read` returns as much text as fits the Worker's inline receipt (8 KiB on rulith.ai; the text is
+  counted as it is encoded there): about 5 KB of plain code per call. `eng.read(path)` gives the start
+  of the file in `head` and, when the rest does not fit, its last KiB in `tail`; `eng.read(path, offset)`
+  gives the window from `offset` in `head`. Both say `next_offset` (where the unread part starts, or
+  null), `complete` and `start_line`; paging by `next_offset` from 0 returns the file exactly.
+- `eng.write_file` with `expect_digest` `""` creates a file that must not exist yet; to replace a file,
+  pass the digest `eng.read` reported for it.
+- A read (`list`, `read`, `search`, `tree_state`) walks the tree once, before it runs. `treeExclude`
+  entries are paths from the project root, or `**/<name>` for a folder of that name at any depth (for
+  example `**/node_modules`). `eng.search` over a path inside a skipped folder walks that folder on demand.
 - `eng.list` and `eng.search` keep at most 1.8 KB of rows (a receipt carries every row twice within the
   Worker's inline budget) and add `truncated: true` when they stop short.
 - `eng.tree_state` also lists the pinned measurement specs as `measure_specs`.
