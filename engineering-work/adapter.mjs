@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { settings, context, fenced, tree, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
+const ROW_BYTES = 1800;
 
 export async function perform(tool, args = {}, env = process.env) {
   const ctx = context(env);
@@ -12,12 +13,13 @@ export async function perform(tool, args = {}, env = process.env) {
     if (['starting', 'running', 'stopping'].includes(job.status) && !['job_poll', 'job_stop'].includes(tool)) refuse('job live: only poll and stop accepted');
     const before = tree(ctx);
     const state = readJson(ctx.stateFile, { gen: 0, digest: before.digest });
-    let rows = []; let text = {};
+    let rows = []; let text = {}; let more = false;
     const file = () => fenced(ctx.root, args.path);
     switch (tool) {
       case 'list': {
         const target = file();
-        rows = fs.readdirSync(target, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name)).slice(0, 128).map(e => {
+        const entries = fs.readdirSync(target, { withFileTypes: true }); more = entries.length > 128;
+        rows = entries.sort((a,b) => a.name.localeCompare(b.name)).slice(0, 128).map(e => {
           const name = path.relative(ctx.root, path.join(target, e.name)).replaceAll('\\', '/');
           fenced(ctx.root, name);
           return { path: name, kind: e.isDirectory() ? 'directory' : e.isSymbolicLink() ? 'link' : 'file' };
@@ -37,7 +39,7 @@ export async function perform(tool, args = {}, env = process.env) {
         if (typeof args.query !== 'string' || !args.query || Buffer.byteLength(args.query) > 1024) refuse('query refused');
         const prefix = path.relative(ctx.root, file()).replaceAll('\\','/');
         for (const name of Object.keys(before.files)) {
-          if (rows.length === 128) break;
+          if (rows.length === 128) { more = true; break; }
           if (name.endsWith('/') || (prefix && name !== prefix && !name.startsWith(`${prefix}/`))) continue;
           const target = fenced(ctx.root, name);
           if (fs.lstatSync(target).isSymbolicLink() || fs.statSync(target).size > 1024 * 1024) continue;
@@ -147,7 +149,12 @@ export async function perform(tool, args = {}, env = process.env) {
     if (tool === 'test') { rows[0].tree_digest = after.digest; rows[0].gen = gen; }
     const testGen = tool === 'test' && rows[0].exit_code === 0 ? gen : state.test_gen;
     save(ctx.stateFile, { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}) });
-    return { rows: rows.flatMap(row => edges.map(edge => ({ ...row, ...edge }))), ...text };
+    let out = rows.flatMap(row => edges.map(edge => ({ ...row, ...edge })));
+    // A receipt carries every row twice (the result text and its facts) inside the Worker's inline budget
+    // (8 KiB on rulith.ai). Listing and search keep at most ROW_BYTES of rows and say when they stopped short.
+    if (tool === 'list' || tool === 'search')
+      while (out.length > edges.length && Buffer.byteLength(JSON.stringify(out)) > ROW_BYTES) { out = out.slice(0, out.length - edges.length); more = true; }
+    return { rows: out, ...text, ...(more ? { truncated: true } : {}) };
   });
 }
 function pinnedCommand(ctx, spec) {

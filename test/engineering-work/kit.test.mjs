@@ -92,6 +92,16 @@ test('a changing test stamps its final generation, a free run cannot emit test_r
   const pass=await f.call('test',{}); assert.equal(pass.rows[0].gen,1); assert.equal(pass.rows[0].tree_digest,tree(f.ctx).digest); assert.ok(pass.rows.every(r=>r.from_gen!==1));
   const run=await f.call('run',{command:['node','test.mjs'],cwd:'.'}); assert.equal(run.rows[0].exit_code,0); assert.equal(run.rows[0].gen,undefined); assert.equal(run.rows[0].value_milli,undefined);
 });
+test('list and search keep their rows small enough to report twice in one receipt and say when they stop short',async t=>{
+  const f=fixture(t);
+  for(let i=0;i<60;i++) fs.writeFileSync(path.join(f.root,`file-${String(i).padStart(2,'0')}.txt`),'needle\nneedle\n');
+  const search=await f.call('search',{path:'.',query:'needle'});
+  assert.ok(search.rows.length>0&&search.rows.length<120,`${search.rows.length} rows`);
+  assert.ok(Buffer.byteLength(JSON.stringify(search.rows))<=1800); assert.equal(search.truncated,true);
+  const list=await f.call('list',{path:'.'});
+  assert.ok(Buffer.byteLength(JSON.stringify(list.rows))<=1800); assert.equal(list.truncated,true);
+  const few=await f.call('search',{path:'test.mjs',query:'exit'}); assert.equal(few.rows.length,1); assert.equal(few.truncated,undefined);
+});
 test('read, list and literal search produce observations with bounded text',async t=>{
   const f=fixture(t); fs.writeFileSync(path.join(f.root,'a.txt'),'needle\n'+'x'.repeat(10000));
   const read=await f.call('read',{path:'a.txt'}); assert.ok(Buffer.byteLength(read.head)<=1024); assert.ok(Buffer.byteLength(read.tail)<=1024);
