@@ -1,5 +1,5 @@
 {
-  "id": "research_ledger",
+  "id": "research_ledger_2",
   "title": "Research ledger",
   "summary": "Keeps an investigation on the Board: hypotheses with their Case, the data they rest on, dropped directions, and which hypotheses are still open. Each Case shows its ledger as research.ledger.item and research.ledger.case_datum rows.",
   "vocabulary": {
@@ -101,7 +101,7 @@
   ],
   "rules": [
     {
-      "id": "dropped_with_reason",
+      "id": "ledger_dropped_with_reason",
       "label": "A hypothesis dropped with a reason is dropped.",
       "when": [
         {
@@ -122,7 +122,7 @@
       ]
     },
     {
-      "id": "item_open",
+      "id": "ledger_item_open",
       "label": "A hypothesis stays open until it is supported, refuted or dropped.",
       "when": [
         {
@@ -182,7 +182,7 @@
       ]
     },
     {
-      "id": "item_supported",
+      "id": "ledger_item_supported",
       "label": "A hypothesis a rule derives as supported is shown as supported.",
       "when": [
         {
@@ -227,7 +227,7 @@
       ]
     },
     {
-      "id": "item_refuted",
+      "id": "ledger_item_refuted",
       "label": "A hypothesis a rule derives as refuted is shown as refuted.",
       "when": [
         {
@@ -272,7 +272,7 @@
       ]
     },
     {
-      "id": "item_dropped",
+      "id": "ledger_item_dropped",
       "label": "A dropped hypothesis is shown as dropped.",
       "when": [
         {
@@ -317,7 +317,7 @@
       ]
     },
     {
-      "id": "case_with_open_hypothesis",
+      "id": "ledger_case_with_open_hypothesis",
       "label": "A Case with an open hypothesis still has an open question.",
       "when": [
         {
@@ -340,7 +340,7 @@
       ]
     },
     {
-      "id": "case_data",
+      "id": "ledger_case_data",
       "label": "Each datum recorded for a Case is shown with that Case.",
       "when": [
         {

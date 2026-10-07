@@ -1,6 +1,6 @@
 # Research ledger
 
-A general Capability for keeping an investigation on the Board: what is being tested, the data it
+A general Capability (published as `research_ledger_2`) for keeping an investigation on the Board: what is being tested, the data it
 rests on, the directions given up, and which questions are still open. It is not specific to
 programming; Deep Rulith uses it inside exploration Cases.
 
