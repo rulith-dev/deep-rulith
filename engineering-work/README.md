@@ -57,6 +57,12 @@ it only for a project you trust.
   null), `complete` and `start_line`; paging by `next_offset` from 0 returns the file exactly.
 - `eng.write_file` with `expect_digest` `""` creates a file that must not exist yet; to replace a file,
   pass the digest `eng.read` reported for it.
+- Refusals say what is wrong in fixed words: `spec refused: <the field at fault>`, `parent directory missing`,
+  `path not found`, `path is a directory`, `path not readable` (never a path or a value). The verdict is also
+  written to stderr, which the Worker reports as the failure reason.
+- While a job runs, writes, runs and measurements are refused but reads go ahead (recording no generation
+  step). `eng.list` gives the folder's `entries` count (a receipt holds at most 32 rows); `eng.search` skips
+  files it cannot read and counts them in `unreadable_files`.
 - A read (`list`, `read`, `search`, `tree_state`) walks the tree once, before it runs. `treeExclude`
   entries are paths from the project root, or `**/<name>` for a folder of that name at any depth (for
   example `**/node_modules`). `eng.search` over a path inside a skipped folder walks that folder on demand.
@@ -91,8 +97,9 @@ and `pinned-measure-interpreted.example.json`.
 
 The agent may pin a measurement itself instead of waiting for the owner: it writes the spec to
 `<project>/.deep-rulith/measure/<name>.json` and runs `eng.measure_pinned` with `spec_id`
-`self-<name>`. The first run copies the spec to `<kit home>/specs/self-<name>.json`, where it never
-changes; later edits of the project copy are ignored. The `self-` prefix stays on every receipt, so the
+`self-<name>`. The first run that passes every check copies the spec to `<kit home>/specs/self-<name>.json`,
+where it never changes; later edits of the project copy are ignored. A refused spec is not frozen, so it
+can be corrected under its name. The `self-` prefix stays on every receipt, so the
 owner can review such specs afterwards and tell them from the owner's own.
 
 ## Closing a Case

@@ -5,6 +5,15 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { settings, context, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
+const READ_TOOLS = ['list', 'read', 'search', 'tree_state'];
+// A receipt carries every row twice (the result text and its facts) inside the Worker's inline budget (8 KiB on
+// rulith.ai). Listing and search keep at most ROW_BYTES of rows, whole rows at a time, and say when they stopped short.
+function fitRows(tool, rows, per) {
+  let out = rows; let cut = false;
+  if (tool === 'list' || tool === 'search')
+    while (out.length > per && Buffer.byteLength(JSON.stringify(out)) > ROW_BYTES) { out = out.slice(0, out.length - per); cut = true; }
+  return { rows: out, cut };
+}
 const READ_TEXT_BYTES = 5000;
 // The bytes a text takes inside the Worker's receipt: once as adapter output JSON, once more as a JSON string.
 const encoded = (text) => Buffer.byteLength(JSON.stringify(JSON.stringify(text)));
@@ -24,10 +33,14 @@ export async function perform(tool, args = {}, env = process.env) {
   const ctx = context(env);
   return locked(ctx, async () => {
     let job = readJson(ctx.jobFile, {});
-    if (['starting', 'running', 'stopping'].includes(job.status) && !['job_poll', 'job_stop'].includes(tool)) refuse('job live: only poll and stop accepted');
-    const before = tree(ctx);
-    const state = readJson(ctx.stateFile, { gen: 0, digest: before.digest });
-    let rows = []; let text = {}; let more = false;
+    // While a job runs it owns the tree's changes: other writes and runs wait, but reads go ahead. Such a read records
+    // no generation step and leaves the recorded tree state alone; the job's poll accounts for what changed.
+    const live = ['starting', 'running', 'stopping'].includes(job.status);
+    const observing = live && READ_TOOLS.includes(tool);
+    if (live && !observing && !['job_poll', 'job_stop'].includes(tool)) refuse('job live: only poll, stop and reads accepted');
+    const before = observing && tool !== 'search' ? null : tree(ctx);
+    const state = readJson(ctx.stateFile, { gen: 0, digest: before?.digest ?? '' });
+    let rows = []; let text = {}; let more = false; let unreadable = 0;
     const file = () => fenced(ctx.root, args.path);
     switch (tool) {
       case 'list': {
@@ -37,7 +50,9 @@ export async function perform(tool, args = {}, env = process.env) {
           const name = path.relative(ctx.root, path.join(target, e.name)).replaceAll('\\', '/');
           fenced(ctx.root, name);
           return { path: name, kind: e.isDirectory() ? 'directory' : e.isSymbolicLink() ? 'link' : 'file' };
-        }); break;
+        });
+        // A receipt holds at most 32 rows: the count of all entries says how much a truncated listing left out.
+        text = { entries: entries.length }; break;
       }
       case 'read': {
         const target = file(); const size = fs.statSync(target).size; const fd = fs.openSync(target,'r');
@@ -74,13 +89,20 @@ export async function perform(tool, args = {}, env = process.env) {
         for (const name of names) {
           if (rows.length === 128) { more = true; break; }
           if (name.endsWith('/') || (prefix && name !== prefix && !name.startsWith(`${prefix}/`))) continue;
-          const target = fenced(ctx.root, name);
-          if (fs.lstatSync(target).isSymbolicLink() || fs.statSync(target).size > 1024 * 1024) continue;
-          const lines = fs.readFileSync(target, 'utf8').split('\n');
+          // A file that vanished or is locked by another program while the search runs is skipped and counted,
+          // instead of failing the whole search.
+          let lines;
+          try {
+            const target = fenced(ctx.root, name);
+            if (fs.lstatSync(target).isSymbolicLink() || fs.statSync(target).size > 1024 * 1024) continue;
+            lines = fs.readFileSync(target, 'utf8').split('\n');
+          } catch { unreadable++; continue; }
           lines.forEach((line, i) => { if (line.includes(args.query) && rows.length < 128) rows.push({ path: name, line: i + 1, digest: sha(line) }); });
-        } break;
+        }
+        if (unreadable) text = { unreadable_files: unreadable };
+        break;
       }
-      case 'tree_state': rows = [{ gen: state.gen, tree_digest: before.digest }]; text = { measure_specs: measureSpecs(ctx) }; break;
+      case 'tree_state': rows = [{ gen: state.gen, tree_digest: before?.digest ?? state.digest }]; text = { measure_specs: measureSpecs(ctx) }; break;
       case 'write_file':
       case 'patch_file': {
         const target = file(); const content = textLimit(args.text);
@@ -98,6 +120,7 @@ export async function perform(tool, args = {}, env = process.env) {
         }
         // Do not create missing parent directories implicitly.
         fenced(ctx.root, path.dirname(target));
+        if (!fs.existsSync(path.dirname(target))) refuse('parent directory missing');
         fs.writeFileSync(fenced(ctx.root, args.path), output);
         const readback = fs.readFileSync(fenced(ctx.root, args.path));
         if (!readback.equals(Buffer.from(output))) refuse('read-back failed');
@@ -142,9 +165,10 @@ export async function perform(tool, args = {}, env = process.env) {
         text = resultText(result); break;
       }
       case 'measure_pinned': {
-        if (Object.keys(args).some(k => k !== 'spec_id')) refuse('spec refused');
+        if (Object.keys(args).some(k => k !== 'spec_id')) refuse('spec refused: the only argument is spec_id');
         const pinned = pin(ctx, args.spec_id); const spec = pinned.spec;
         const command = pinnedCommand(ctx, spec);
+        // Each refusal names the field at fault (field names and fixed words only: never a path or a value).
         // Two ways to read the number: the measuring program prints one small JSON object with an integer milli-value
         // (json_integer_milli), or it writes a JSON result file inside the project and the spec names the path to one
         // number in it, scaled to milli (json_file_number_milli; the file must be rewritten by this run).
@@ -152,21 +176,35 @@ export async function perform(tool, args = {}, env = process.env) {
         const fileParser = parser.kind === 'json_file_number_milli';
         const pathOk = Array.isArray(parser.path) && parser.path.length >= 1 && parser.path.length <= 8
           && parser.path.every((k) => (typeof k === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(k)) || Number.isSafeInteger(k));
-        if (!['ms','us','tokens_per_second','bytes_per_second'].includes(spec.unit) || !Number.isInteger(spec.repeats) || spec.repeats < 1 || spec.repeats > 16
-          || !['json_integer_milli', 'json_file_number_milli'].includes(parser.kind)
-          || (fileParser ? typeof parser.file !== 'string' || !pathOk : !/^[a-zA-Z0-9_]+$/.test(parser.field))) refuse('spec refused');
-        for (const key of ['binary_digest', 'workload_digest', 'config_digest']) if (!/^[a-f0-9]{64}$/.test(spec[key])) refuse('spec refused');
-        const binary = fenced(ctx.root, spec.binary); const candidate = fenced(ctx.root, spec.candidate_binary);
+        if (!['ms','us','tokens_per_second','bytes_per_second'].includes(spec.unit)) refuse('spec refused: unit must be ms, us, tokens_per_second or bytes_per_second');
+        if (!Number.isInteger(spec.repeats) || spec.repeats < 1 || spec.repeats > 16) refuse('spec refused: repeats must be 1 to 16');
+        if (!['json_integer_milli', 'json_file_number_milli'].includes(parser.kind)) refuse('spec refused: parser kind must be json_integer_milli or json_file_number_milli');
+        if (fileParser ? typeof parser.file !== 'string' || !pathOk : !/^[a-zA-Z0-9_]+$/.test(parser.field))
+          refuse(fileParser ? 'spec refused: parser needs file and a path of 1 to 8 keys or indexes' : 'spec refused: parser needs field');
+        for (const key of ['binary_digest', 'workload_digest', 'config_digest']) if (!/^[a-f0-9]{64}$/.test(spec[key])) refuse(`spec refused: ${key} must be a sha256 hex digest`);
+        // binary, candidate_binary, workload and config are files in the project; a script that makes its own input
+        // can name itself as the workload.
+        const projectFile = (key) => {
+          if (typeof spec[key] !== 'string' || !spec[key]) refuse(`spec refused: ${key} must name a project file`);
+          let target; try { target = fenced(ctx.root, spec[key]); } catch { refuse(`spec refused: ${key} must name a project file`); }
+          if (!fs.existsSync(target) || !fs.statSync(target).isFile()) refuse(`spec refused: ${key} is not a file in the project`);
+          return target;
+        };
+        const binary = projectFile('binary'); projectFile('candidate_binary');
+        // The binary's digest is checked before each repeat ('measuring binary digest changed'); the inputs here.
+        for (const key of ['workload', 'config']) if (fileDigest(projectFile(key)) !== spec[`${key}_digest`]) refuse('measurement inputs changed');
         // An interpreted harness (a Python script, for example): the owner pins the interpreter by name or absolute path,
         // and the script is the pinned `binary`, the second word of the command.
         const interpreted = spec.interpreter !== undefined;
         if (interpreted && (typeof spec.interpreter !== 'string' || !spec.interpreter || spec.interpreter.includes('\0')
-          || command.command[0] !== spec.interpreter || command.command.length < 2)) refuse('spec refused');
+          || command.command[0] !== spec.interpreter || command.command.length < 2)) refuse('spec refused: command must start with the interpreter, then the binary');
         const at = interpreted ? 1 : 0;
         // A pin on an unrelated file must never accredit another program's numbers.
         const executable = path.resolve(command.cwd, command.command[at]);
-        if (fs.realpathSync(executable) !== fs.realpathSync(binary)) refuse('spec refused');
+        if (!fs.existsSync(executable) || fs.realpathSync(executable) !== fs.realpathSync(binary)) refuse(`spec refused: command word ${at + 1} must be the binary`);
         command.command[at] = binary;
+        // A self- spec that passed every check is frozen now, before its first run.
+        pinned.freeze?.();
         const resultFile = fileParser ? fenced(ctx.root, parser.file) : null;
         for (let repeat = 1; repeat <= spec.repeats; repeat++) {
           const currentBinary = fenced(ctx.root, spec.binary);
@@ -200,7 +238,11 @@ export async function perform(tool, args = {}, env = process.env) {
     }
     // A read changes nothing, so the tree after it is the tree before it; a change made meanwhile by someone else is
     // seen by the next call's walk. (One walk of a large tree takes seconds.)
-    const after = ['list', 'read', 'search', 'tree_state'].includes(tool) ? before : tree(ctx);
+    if (observing) {
+      const out = fitRows(tool, rows.map(row => ({ ...row, from_gen: -1, to_gen: -1 })), 1);
+      return { rows: out.rows, ...text, ...(more || out.cut ? { truncated: true } : {}) };
+    }
+    const after = READ_TOOLS.includes(tool) ? before : tree(ctx);
     if (tool === 'run') { rows[0].tree_after = after.digest; rows[0].changed_files = JSON.stringify(changed(before, after)); }
     const mutated = state.digest !== after.digest;
     const gen = state.gen + (mutated ? 1 : 0);
@@ -215,12 +257,8 @@ export async function perform(tool, args = {}, env = process.env) {
     if (tool === 'test') { rows[0].tree_digest = after.digest; rows[0].gen = gen; }
     const testGen = tool === 'test' && rows[0].exit_code === 0 ? gen : state.test_gen;
     save(ctx.stateFile, { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}) });
-    let out = rows.flatMap(row => edges.map(edge => ({ ...row, ...edge })));
-    // A receipt carries every row twice (the result text and its facts) inside the Worker's inline budget
-    // (8 KiB on rulith.ai). Listing and search keep at most ROW_BYTES of rows and say when they stopped short.
-    if (tool === 'list' || tool === 'search')
-      while (out.length > edges.length && Buffer.byteLength(JSON.stringify(out)) > ROW_BYTES) { out = out.slice(0, out.length - edges.length); more = true; }
-    return { rows: out, ...text, ...(more ? { truncated: true } : {}) };
+    const out = fitRows(tool, rows.flatMap(row => edges.map(edge => ({ ...row, ...edge }))), edges.length);
+    return { rows: out.rows, ...text, ...(more || out.cut ? { truncated: true } : {}) };
   });
 }
 // The 1-based line on which byte `offset` lies, counted by streaming the file; null past 16 MiB.
@@ -238,13 +276,16 @@ function lineAt(file, offset) {
   return line;
 }
 // The measurement specs the owner pinned (their spec_id values); test.json is the pinned test, not a measurement.
+// The measurement spec ids: the owner's and frozen self- specs in the kit home, and self- specs the agent wrote in
+// the project and has not run yet (<project>/.deep-rulith/measure/<name>.json is spec_id self-<name>).
 function measureSpecs(ctx) {
-  try { return fs.readdirSync(path.join(ctx.home, 'specs')).filter((n) => n.endsWith('.json') && n !== 'test.json').map((n) => n.slice(0, -5)).sort(); }
-  catch { return []; }
+  const names = (dir) => { try { return fs.readdirSync(dir).filter((n) => /^[a-zA-Z0-9_-]{1,64}[.]json$/.test(n)).map((n) => n.slice(0, -5)); } catch { return []; } };
+  const proposed = names(path.join(ctx.root, '.deep-rulith', 'measure')).map((n) => `self-${n}`).filter((n) => n.length <= 64);
+  return [...new Set([...names(path.join(ctx.home, 'specs')).filter((n) => n !== 'test'), ...proposed])].sort();
 }
 function pinnedCommand(ctx, spec) {
   // Owner-pinned executable may be an absolute toolchain path outside the Source.
-  if (!Array.isArray(spec.command) || !spec.command.length || spec.command.some(x => typeof x !== 'string' || !x || x.includes('\0'))) refuse('spec refused');
+  if (!Array.isArray(spec.command) || !spec.command.length || spec.command.some(x => typeof x !== 'string' || !x || x.includes('\0'))) refuse('spec refused: command must be a list of non-empty strings');
   // A pinned spec may ask for the system shell (for example `npm test` on Windows, which is a .cmd script).
   return { command: spec.command, cwd: fenced(ctx.root, spec.cwd ?? '.'), shell: spec.shell === true, line: spec.command.join(' ') };
 }
@@ -259,8 +300,11 @@ export async function main(tool) {
     process.stdout.write(JSON.stringify(await perform(tool, args)));
   } catch (error) {
     // Never echo paths, arbitrary exception messages, commands, or spec contents.
-    const messages = ['path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll and stop accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted'];
-    const verdict = messages.includes(error.message) ? error.message : 'adapter failed';
+    const messages = ['path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll, stop and reads accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted','parent directory missing'];
+    // A spec refusal names its field in fixed words (no path, no value); a file-system error says only what kind it was.
+    const fileErrors = { ENOENT: 'path not found', EISDIR: 'path is a directory', ENOTDIR: 'path not found', EACCES: 'path not readable', EPERM: 'path not readable', EBUSY: 'path not readable' };
+    const verdict = messages.includes(error.message) || /^spec refused: [A-Za-z0-9_ ,()-]+$/.test(error.message) ? error.message
+      : fileErrors[error.code] ?? 'adapter failed';
     process.stdout.write(JSON.stringify({ rows: [], verdict }));
     // The Worker reports a failed run with what the command wrote to stderr: the verdict goes there too.
     process.stderr.write(verdict);

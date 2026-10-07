@@ -59,19 +59,25 @@ export function save(file, value) {
   fs.renameSync(tmp, file);
 }
 export function pin(ctx, id) {
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) refuse('spec refused');
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(id)) refuse('spec refused: spec_id is letters, digits, - and _ (at most 64)');
   const file = path.join(ctx.home, 'specs', `${id}.json`);
   // A spec the agent wrote itself (spec_id self-<name>, from <project>/.deep-rulith/measure/<name>.json) is frozen into
-  // the kit home on first use and never changes afterwards: runs of one spec_id stay comparable without waiting for the
-  // owner. The self- prefix stays on every receipt, so its provenance is visible; the owner's specs have no prefix.
+  // the kit home when a measurement first runs on it (after the spec passed every check, so a refused spec can still
+  // be corrected under its name) and never changes afterwards: runs of one spec_id stay comparable without waiting for
+  // the owner. The self- prefix stays on every receipt, so its provenance is visible; the owner's specs have no prefix.
   if (id.startsWith('self-') && !fs.existsSync(file)) {
     const source = fenced(ctx.root, `.deep-rulith/measure/${id.slice(5)}.json`);
-    if (!fs.existsSync(source)) refuse('spec refused');
+    if (!fs.existsSync(source)) refuse('spec refused: no such spec');
     const bytes = fs.readFileSync(source);
-    if (bytes.length > 16384) refuse('spec refused');
-    try { JSON.parse(bytes); } catch { refuse('spec refused'); }
-    try { fs.writeFileSync(file, bytes, { flag: 'wx' }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    if (bytes.length > 16384) refuse('spec refused: larger than 16 KiB');
+    let spec; try { spec = JSON.parse(bytes); } catch { refuse('spec refused: not valid JSON'); }
+    const freeze = () => {
+      try { fs.writeFileSync(file, bytes, { flag: 'wx' }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+      if (sha(fs.readFileSync(file)) !== sha(bytes)) refuse('spec refused: another spec was frozen under this id first');
+    };
+    return { spec, digest: sha(bytes), freeze };
   }
+  if (!fs.existsSync(file)) refuse('spec refused: no such spec');
   if (!inside(ctx.home, fs.realpathSync(file))) refuse('spec refused');
   const bytes = fs.readFileSync(file);
   return { spec: JSON.parse(bytes), digest: sha(bytes) };
