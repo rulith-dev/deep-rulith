@@ -5,11 +5,13 @@
   "description": "Deep Rulith: DeepSeek Harness with Rulith as its only tools",
   "license": "Apache-2.0",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test --test-concurrency=4 test/harness/kit.test.mjs test/engineering-work/kit.test.mjs"
   },
   "dependencies": {
-    "rulith": "^0.12.0"
+    "rulith": "^0.12.1"
   }
 }
