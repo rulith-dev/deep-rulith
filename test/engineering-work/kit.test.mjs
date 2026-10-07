@@ -217,6 +217,16 @@ test('a command line string is split into argv without a shell',async t=>{
   const ok=await f.call('run',{command:'node test.mjs',cwd:'.'}); assert.ok(ok.rows.length>0);
   for (const bad of ['node test.mjs | more','node test.mjs && echo x','node "unclosed','node $(whoami)','node test.mjs > out.txt']) await assert.rejects(f.call('run',{command:bad,cwd:'.'}),/command refused/);
 });
+test('recording git history is refused anywhere in a shell line unless the owner allows git_commit', t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.home, 'settings.json'), JSON.stringify({ shell: true }));
+  for (const line of ['git commit -m x', 'cd src && git commit -am x', 'git -C . tag v1', 'git merge main', 'echo hi && git config user.name x', 'git reset --hard'])
+    assert.throws(() => classify(f.ctx, line, '.'), /command refused/, line);
+  for (const line of ['git status', 'git log --merges', 'git diff HEAD~1', 'git stash'])
+    assert.doesNotThrow(() => classify(f.ctx, line, '.'), line);
+  fs.writeFileSync(path.join(f.home, 'settings.json'), JSON.stringify({ shell: true, allow: ['git_commit'] }));
+  assert.doesNotThrow(() => classify(f.ctx, 'git commit -m x', '.'));
+});
 test('owner settings relax the classifier: outside paths, installs, deletes and the shell', async t => {
   const f = fixture(t);
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'eng-outside-'));

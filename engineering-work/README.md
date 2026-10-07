@@ -37,12 +37,12 @@ See `settings.example.json`. All fields are optional.
 | `jobLimitSeconds` | 0 | Longest background job; 0 means no limit. |
 | `pollMaxWaitSeconds` | 35 | Longest wait of one `eng.job_poll`. |
 | `allowedPaths` | `[]` | Absolute directories outside the project that commands may name (toolchains, model files). Reads and writes stay inside the project. |
-| `allow` | `[]` | Relaxed rules: `install` (project-local dependency installs), `delete` (deletion inside the project), `git_rewrite` (`git reset`, `git clean`). |
+| `allow` | `[]` | Relaxed rules: `install` (project-local dependency installs), `delete` (deletion inside the project), `git_rewrite` (`git reset`, `git clean`), `git_commit` (commits, merges, rebases, tags). |
 | `shell` | `false` | Run commands through the system shell (pipes, redirects, `.cmd` scripts). |
 | `treeExclude` | `[]` | Project-relative directories left out of the tree digest (build outputs, caches). `.git` is always excluded. |
 
 Always refused: privilege elevation, killing processes or stopping services, push/publish, global
-installs or configuration, inline interpreter code (`node -e`, `python -c`, …) and paths that
+installs or configuration (git subcommands are checked anywhere in a shell line), inline interpreter code (`node -e`, `python -c`, …) and paths that
 escape the project or the allowed directories. With `shell: true` these checks see only the
 command line as written: a shell or script can still run anything the Worker's user can, so enable
 it only for a project you trust.

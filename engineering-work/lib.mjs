@@ -150,13 +150,15 @@ export function classify(ctx, input, cwd = '.') {
   const words = command.map(x => x.toLowerCase());
   const joined = words.join(' ');
   const has = (rule) => opts.allow.has(rule);
+  // A git subcommand anywhere in the line, so `cd x && git commit` is seen as well as `git commit`.
+  const git = (subcommands) => new RegExp(`\\bgit\\b[^;&|]*\\b(${subcommands})\\b`).test(joined);
   // Always refused: privilege, process and service control, publishing, global installs.
   if (/^(sudo|doas|runas|taskkill|kill|killall|pkill|env)$/.test(exe)) refuse('command refused');
   if (/\b(push|publish)\b/.test(joined)) refuse('command refused');
   if (words.some(x => ['-g', '--global', '--system'].includes(x))) refuse('command refused');
   if ((['net', 'sc', 'systemctl', 'service', 'docker', 'supervisorctl', 'launchctl', 'brew'].includes(exe) && /\b(stop|restart|kill|delete|down)\b/.test(joined))
     || /\b(stop-service|stop-process)\b/.test(joined)) refuse('command refused');
-  if (exe === 'git' && /\bconfig\b/.test(joined)) refuse('command refused');
+  if (git('config')) refuse('command refused');
   // Inline code is a command the classifier cannot read.
   if ((exe === 'node' && words.some(x => /^(-[epr]|--eval|--print|--require|--import)(=|$)/.test(x)))
     || (/^python[0-9.]*$|^py$/.test(exe) && words.includes('-c')) || (/^(perl|ruby)$/.test(exe) && words.includes('-e'))) refuse('command refused');
@@ -166,7 +168,9 @@ export function classify(ctx, input, cwd = '.') {
   if (/^(rm|rmdir|del|erase|remove-item|rd|unlink)$/.test(exe) && !has('delete')) refuse('command refused');
   if (/\b(delete|rmdir|erase|unlink|remove-item)\b/.test(joined) && !has('delete')) refuse('command refused');
   if ((['npm', 'pnpm', 'yarn', 'pip', 'pip3', 'cargo', 'gem', 'uv'].includes(exe) && /\b(install|add|update|upgrade|i)\b/.test(joined)) && !has('install')) refuse('command refused');
-  if (exe === 'git' && /\b(clean|reset)\b/.test(joined) && !has('git_rewrite')) refuse('command refused');
+  if (git('clean|reset') && !has('git_rewrite')) refuse('command refused');
+  // Recording history is the owner's: commits, merges, rebases and tags need allow: ["git_commit"].
+  if (git('commit|merge|rebase|cherry-pick|revert|am|tag') && !has('git_commit')) refuse('command refused');
   // Paths: inside the project, or under a directory the owner listed.
   for (const arg of command) {
     const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
@@ -214,12 +218,12 @@ export function settings(home = process.env.ENG_KIT_HOME) {
     return value;
   };
   // allowedPaths：命令可以引用的项目外目录（例如模型文件、SDK）；只放宽命令里的路径检查，工作区读写仍只在项目里。
-  // allow：放宽的规则名——install（项目内安装依赖）、delete（项目内删除）、git_rewrite（git reset／clean）。
+  // allow：放宽的规则名——install（项目内安装依赖）、delete（项目内删除）、git_rewrite（git reset／clean）、git_commit（提交、合并、变基、打标签）。
   // shell：命令交给系统 shell 执行（可用管道、重定向、.cmd 脚本）。推送／发布、全局安装、停服务、杀进程、提权始终拒绝。
   const allowedPaths = s.allowedPaths === undefined ? [] : s.allowedPaths;
   if (!Array.isArray(allowedPaths) || allowedPaths.some((p) => typeof p !== 'string' || !path.isAbsolute(p))) refuse('settings refused');
   const allow = s.allow === undefined ? [] : s.allow;
-  if (!Array.isArray(allow) || allow.some((r) => !['install', 'delete', 'git_rewrite'].includes(r))) refuse('settings refused');
+  if (!Array.isArray(allow) || allow.some((r) => !['install', 'delete', 'git_rewrite', 'git_commit'].includes(r))) refuse('settings refused');
   if (s.shell !== undefined && typeof s.shell !== 'boolean') refuse('settings refused');
   const treeExclude = s.treeExclude === undefined ? [] : s.treeExclude;
   if (!Array.isArray(treeExclude) || treeExclude.some((n) => typeof n !== 'string' || !n || n === '.' || path.isAbsolute(n) || n.split(/[\\/]/).includes('..'))) refuse('settings refused');
