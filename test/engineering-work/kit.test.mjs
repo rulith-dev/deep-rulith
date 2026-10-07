@@ -190,17 +190,19 @@ test('run records output hashes and changes but printed numbers remain text',asy
 test('deadline kills child and grandchild process tree',async t=>{
   if (!await treeKillAvailable(t)) return;
   const f=fixture(t);
-  fs.writeFileSync(path.join(f.root,'grandchild.mjs'),"import fs from 'node:fs'; fs.writeFileSync('grandchild.pid',String(process.pid)); setInterval(()=>fs.appendFileSync('heart','x'),50)");
-  fs.writeFileSync(path.join(f.root,'child.mjs'),"import {spawn} from 'node:child_process'; spawn(process.execPath,['grandchild.mjs'],{stdio:'inherit'}); setInterval(()=>{},1000)");
-  fs.writeFileSync(path.join(f.root,'parent.mjs'),"import {spawn} from 'node:child_process'; spawn(process.execPath,['child.mjs'],{stdio:'inherit'}); setInterval(()=>{},1000)");
+  // 每个测试进程 60 秒后自行退出：测试运行器若被外部杀掉，留下的进程树不会一直跑下去（10-07 曾留下一棵跑了 20 小时的作业树）。
+  fs.writeFileSync(path.join(f.root,'grandchild.mjs'),"import fs from 'node:fs'; fs.writeFileSync('grandchild.pid',String(process.pid)); setInterval(()=>fs.appendFileSync('heart','x'),50); setTimeout(()=>process.exit(0),60000)");
+  fs.writeFileSync(path.join(f.root,'child.mjs'),"import {spawn} from 'node:child_process'; spawn(process.execPath,['grandchild.mjs'],{stdio:'inherit'}); setTimeout(()=>process.exit(0),60000)");
+  fs.writeFileSync(path.join(f.root,'parent.mjs'),"import {spawn} from 'node:child_process'; spawn(process.execPath,['child.mjs'],{stdio:'inherit'}); setTimeout(()=>process.exit(0),60000)");
   const r=await execute(['node','parent.mjs'],f.root,{deadlineMs:1200}); assert.equal(r.timed_out,true); assert.ok(r.duration_ms<8000);
   const bytes=fs.statSync(path.join(f.root,'heart')).size; await sleep(300); assert.equal(fs.statSync(path.join(f.root,'heart')).size,bytes);
 });
 test('job survives adapter exit, blocks other tools, then poll and stop kill descendants',async t=>{
   if (!await treeKillAvailable(t)) return;
   const f=fixture(t);
-  fs.writeFileSync(path.join(f.root,'job-child.mjs'),"import fs from 'node:fs'; setInterval(()=>fs.appendFileSync('job-heart','x'),50)");
-  fs.writeFileSync(path.join(f.root,'job.mjs'),"import {spawn} from 'node:child_process'; spawn(process.execPath,['job-child.mjs'],{stdio:'inherit'}); setInterval(()=>{},1000)");
+  // 作业是刻意脱离适配器的；两层进程都在 60 秒后自行退出，测试运行器被外部杀掉时也不会留下常驻进程。
+  fs.writeFileSync(path.join(f.root,'job-child.mjs'),"import fs from 'node:fs'; setInterval(()=>fs.appendFileSync('job-heart','x'),50); setTimeout(()=>process.exit(0),60000)");
+  fs.writeFileSync(path.join(f.root,'job.mjs'),"import {spawn} from 'node:child_process'; spawn(process.execPath,['job-child.mjs'],{stdio:'inherit'}); setTimeout(()=>process.exit(0),60000)");
   const adapter=fileURLToPath(new URL('../../engineering-work/job_start.mjs',import.meta.url));
   const receipt=JSON.parse(execFileSync(process.execPath,[adapter,JSON.stringify({command:['node','job.mjs'],cwd:'.'})],{env:f.env,encoding:'utf8'}));
   const id=receipt.rows[0].job_id;
