@@ -88,7 +88,11 @@ window.__ModuleLoader__.load({
             h("input", { type: "radio", name: "deep-rulith-agent", checked: a.name === s.selected, disabled: !!busy,
               onChange: () => run("select", () => api("select", { agentId: a.id })) }),
             h("span", { style: { flex: 1 } }, a.name),
-            a.paired ? dot(a.worker && a.worker.state === "online" ? GREEN : AMBER) : h("span", { style: { fontSize: 11, opacity: 0.6 } }, "未在本机设置"))),
+            // An Agent chosen earlier but not set up on this computer (for example after signing in again) cannot be
+            // set up by its radio, which is already checked: the row offers the step itself.
+            a.paired ? dot(a.worker && a.worker.state === "online" ? GREEN : AMBER)
+              : h("button", { style: { ...button, fontSize: 11 }, disabled: !!busy,
+                  onClick: (event) => { event.preventDefault(); run("select", () => api("select", { agentId: a.id })); } }, "在本机设置"))),
           agent && agent.instanceId ? h("label", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 8 } },
             h("input", { type: "checkbox", checked: !!(agent.worker && agent.worker.enabled), disabled: !!busy,
               onChange: (event) => run("worker", () => api("worker", { instanceId: agent.instanceId, enabled: event.target.checked })) }),

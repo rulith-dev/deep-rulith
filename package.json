@@ -12,6 +12,6 @@
     "test": "node --test --test-concurrency=4 test/harness/kit.test.mjs test/engineering-work/kit.test.mjs"
   },
   "dependencies": {
-    "rulith": "^0.12.2"
+    "rulith": "^0.12.4"
   }
 }
