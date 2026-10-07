@@ -29,11 +29,19 @@ export async function perform(tool, args = {}, env = process.env) {
         const target = file(); const size = fs.statSync(target).size; const fd = fs.openSync(target,'r');
         const offset = args.offset ?? 0;
         if (!Number.isSafeInteger(offset) || offset < 0 || offset > size) { fs.closeSync(fd); refuse('offset refused'); }
-        const span = args.offset === undefined ? size : Math.min(2048,size-offset);
-        const head = Buffer.alloc(Math.min(1024,span)); const tailOffset = offset + Math.max(0,span-1024); const tail = Buffer.alloc(Math.min(1024,span));
-        try { fs.readSync(fd,head,0,head.length,offset); fs.readSync(fd,tail,0,tail.length,tailOffset); } finally { fs.closeSync(fd); }
+        // Without an offset: the file's first and last KiB. With one: the 2 KiB window from it, as two adjacent halves
+        // (head, then tail from offset + 1024). Either way the text says where the unread part starts and on which line.
+        const paged = args.offset !== undefined;
+        const end = paged ? Math.min(size, offset + 2048) : size;
+        const headEnd = Math.min(end, offset + 1024);
+        const tailOffset = paged ? headEnd : Math.max(headEnd, size - 1024);
+        const head = Buffer.alloc(headEnd - offset); const tail = Buffer.alloc(end - tailOffset);
+        try { fs.readSync(fd,head,0,head.length,offset); if (tail.length) fs.readSync(fd,tail,0,tail.length,tailOffset); } finally { fs.closeSync(fd); }
         rows = [{ path: path.relative(ctx.root, target).replaceAll('\\', '/'), digest: fileDigest(target), bytes: size, offset, tail_offset: tailOffset }];
-        text = { head: clip(head), tail: span > 1024 ? clip(tail,true) : '' }; break;
+        // Unread: after the window when paging; between the first and last KiB otherwise.
+        const nextOffset = paged ? (end < size ? end : null) : (tailOffset > headEnd ? headEnd : null);
+        text = { head: clip(head), tail: tail.length ? clip(tail,true) : '', next_offset: nextOffset, complete: nextOffset === null,
+          start_line: lineAt(target, offset) }; break;
       }
       case 'search': {
         if (typeof args.query !== 'string' || !args.query || Buffer.byteLength(args.query) > 1024) refuse('query refused');
@@ -47,7 +55,7 @@ export async function perform(tool, args = {}, env = process.env) {
           lines.forEach((line, i) => { if (line.includes(args.query) && rows.length < 128) rows.push({ path: name, line: i + 1, digest: sha(line) }); });
         } break;
       }
-      case 'tree_state': rows = [{ gen: state.gen, tree_digest: before.digest }]; break;
+      case 'tree_state': rows = [{ gen: state.gen, tree_digest: before.digest }]; text = { measure_specs: measureSpecs(ctx) }; break;
       case 'write_file':
       case 'patch_file': {
         const target = file(); const content = textLimit(args.text);
@@ -110,24 +118,53 @@ export async function perform(tool, args = {}, env = process.env) {
         if (Object.keys(args).some(k => k !== 'spec_id')) refuse('spec refused');
         const pinned = pin(ctx, args.spec_id); const spec = pinned.spec;
         const command = pinnedCommand(ctx, spec);
-        if (!['ms','us','tokens_per_second','bytes_per_second'].includes(spec.unit) || !Number.isInteger(spec.repeats) || spec.repeats < 1 || spec.repeats > 16 || !['json_integer_milli'].includes(spec.parser?.kind) || !/^[a-zA-Z0-9_]+$/.test(spec.parser?.field)) refuse('spec refused');
+        // Two ways to read the number: the measuring program prints one small JSON object with an integer milli-value
+        // (json_integer_milli), or it writes a JSON result file inside the project and the spec names the path to one
+        // number in it, scaled to milli (json_file_number_milli; the file must be rewritten by this run).
+        const parser = spec.parser ?? {};
+        const fileParser = parser.kind === 'json_file_number_milli';
+        const pathOk = Array.isArray(parser.path) && parser.path.length >= 1 && parser.path.length <= 8
+          && parser.path.every((k) => (typeof k === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(k)) || Number.isSafeInteger(k));
+        if (!['ms','us','tokens_per_second','bytes_per_second'].includes(spec.unit) || !Number.isInteger(spec.repeats) || spec.repeats < 1 || spec.repeats > 16
+          || !['json_integer_milli', 'json_file_number_milli'].includes(parser.kind)
+          || (fileParser ? typeof parser.file !== 'string' || !pathOk : !/^[a-zA-Z0-9_]+$/.test(parser.field))) refuse('spec refused');
         for (const key of ['binary_digest', 'workload_digest', 'config_digest']) if (!/^[a-f0-9]{64}$/.test(spec[key])) refuse('spec refused');
         const binary = fenced(ctx.root, spec.binary); const candidate = fenced(ctx.root, spec.candidate_binary);
+        // An interpreted harness (a Python script, for example): the owner pins the interpreter by name or absolute path,
+        // and the script is the pinned `binary`, the second word of the command.
+        const interpreted = spec.interpreter !== undefined;
+        if (interpreted && (typeof spec.interpreter !== 'string' || !spec.interpreter || spec.interpreter.includes('\0')
+          || command.command[0] !== spec.interpreter || command.command.length < 2)) refuse('spec refused');
+        const at = interpreted ? 1 : 0;
         // A pin on an unrelated file must never accredit another program's numbers.
-        const executable = path.resolve(command.cwd, command.command[0]);
+        const executable = path.resolve(command.cwd, command.command[at]);
         if (fs.realpathSync(executable) !== fs.realpathSync(binary)) refuse('spec refused');
-        command.command = [binary, ...command.command.slice(1)];
+        command.command[at] = binary;
+        const resultFile = fileParser ? fenced(ctx.root, parser.file) : null;
         for (let repeat = 1; repeat <= spec.repeats; repeat++) {
           const currentBinary = fenced(ctx.root, spec.binary);
           if (fileDigest(currentBinary) !== spec.binary_digest) refuse('measuring binary digest changed');
-          command.command[0] = currentBinary;
+          command.command[at] = currentBinary;
           if (pin(ctx,args.spec_id).digest !== pinned.digest) refuse('spec refused');
           if (fileDigest(fenced(ctx.root, spec.workload)) !== spec.workload_digest || fileDigest(fenced(ctx.root, spec.config)) !== spec.config_digest) refuse('measurement inputs changed');
           const candidateDigest = fileDigest(fenced(ctx.root,spec.candidate_binary));
+          const previous = resultFile && fs.existsSync(resultFile) ? fs.statSync(resultFile).mtimeMs : null;
           const result = await execute(command.command, command.cwd, { deadlineMs: Math.floor(settings(ctx.home).runSeconds * 1000 / spec.repeats) });
-          if (result.exit_code !== 0 || result.timed_out || result.stdout.bytes > 1024 || fileDigest(fenced(ctx.root,spec.binary)) !== spec.binary_digest || fileDigest(fenced(ctx.root,spec.candidate_binary)) !== candidateDigest || fileDigest(fenced(ctx.root, spec.workload)) !== spec.workload_digest || fileDigest(fenced(ctx.root, spec.config)) !== spec.config_digest) refuse('measurement failed');
-          let parsed; try { parsed = JSON.parse(result.stdout.head); } catch { refuse('measurement failed'); }
-          const value = parsed[spec.parser.field];
+          if (result.exit_code !== 0 || result.timed_out || (!fileParser && result.stdout.bytes > 1024) || fileDigest(fenced(ctx.root,spec.binary)) !== spec.binary_digest || fileDigest(fenced(ctx.root,spec.candidate_binary)) !== candidateDigest || fileDigest(fenced(ctx.root, spec.workload)) !== spec.workload_digest || fileDigest(fenced(ctx.root, spec.config)) !== spec.config_digest) refuse('measurement failed');
+          let value;
+          if (fileParser) {
+            if (!fs.existsSync(resultFile) || fs.statSync(resultFile).size > 1024 * 1024 || fs.statSync(resultFile).mtimeMs === previous) refuse('measurement failed');
+            let node; try { node = JSON.parse(fs.readFileSync(resultFile, 'utf8')); } catch { refuse('measurement failed'); }
+            for (const key of parser.path) {
+              if (node === null || typeof node !== 'object') refuse('measurement failed');
+              node = typeof key === 'number' ? (Array.isArray(node) ? node[key < 0 ? node.length + key : key] : undefined) : node[key];
+            }
+            if (typeof node !== 'number' || !Number.isFinite(node) || node < 0) refuse('measurement failed');
+            value = Math.round(node * 1000);
+          } else {
+            let parsed; try { parsed = JSON.parse(result.stdout.head); } catch { refuse('measurement failed'); }
+            value = parsed[parser.field];
+          }
           if (!Number.isSafeInteger(value) || value < 0) refuse('measurement failed');
           rows.push({ spec_id: args.spec_id, repeat, value_milli: value, unit: spec.unit, spec_digest: pinned.digest, binary_digest: spec.binary_digest, candidate_digest: candidateDigest, workload_digest: spec.workload_digest, config_digest: spec.config_digest });
         } break;
@@ -156,6 +193,25 @@ export async function perform(tool, args = {}, env = process.env) {
       while (out.length > edges.length && Buffer.byteLength(JSON.stringify(out)) > ROW_BYTES) { out = out.slice(0, out.length - edges.length); more = true; }
     return { rows: out, ...text, ...(more ? { truncated: true } : {}) };
   });
+}
+// The 1-based line on which byte `offset` lies, counted by streaming the file; null past 16 MiB.
+function lineAt(file, offset) {
+  if (offset > 16 * 1024 * 1024) return null;
+  const fd = fs.openSync(file, 'r'); const chunk = Buffer.alloc(65536); let line = 1, at = 0;
+  try {
+    while (at < offset) {
+      const n = fs.readSync(fd, chunk, 0, Math.min(chunk.length, offset - at), at);
+      if (n <= 0) break;
+      for (let i = 0; i < n; i++) if (chunk[i] === 10) line++;
+      at += n;
+    }
+  } finally { fs.closeSync(fd); }
+  return line;
+}
+// The measurement specs the owner pinned (their spec_id values); test.json is the pinned test, not a measurement.
+function measureSpecs(ctx) {
+  try { return fs.readdirSync(path.join(ctx.home, 'specs')).filter((n) => n.endsWith('.json') && n !== 'test.json').map((n) => n.slice(0, -5)).sort(); }
+  catch { return []; }
 }
 function pinnedCommand(ctx, spec) {
   // Owner-pinned executable may be an absolute toolchain path outside the Source.

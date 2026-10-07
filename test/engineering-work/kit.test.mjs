@@ -121,6 +121,34 @@ test('pinned measurements map integer milli-values, units, repeats and digests',
   const result=await f.call('measure_pinned',{spec_id:'measure'});assert.deepEqual(result.rows.map(r=>r.value_milli),[1200,1200]);assert.deepEqual(result.rows.map(r=>r.repeat),[1,2]);assert.ok(result.rows.every(r=>r.binary_digest===spec.binary_digest&&r.unit==='ms'&&r.candidate_digest===sha('candidate')));
   const tool=JSON.parse(fs.readFileSync(new URL('../../engineering-work/worker-tools.json',import.meta.url))).tools['eng.measure_pinned@1'];assert.equal(resultFactsFromRows(tool,result.rows).filter(f=>f.predicate==='eng.measurement').length,2);
 });
+test('an interpreted harness writes a result file; the pinned path to one number becomes the milli-value',async t=>{
+  const f=fixture(t); fs.mkdirSync(path.join(f.root,'tools')); fs.mkdirSync(path.join(f.root,'logs'));
+  const script="import fs from 'node:fs'; console.log('lots of progress text '.repeat(200)); fs.writeFileSync('logs/results.json',JSON.stringify({run:[{tps:1.5},{tps:12.25}]}))";
+  fs.writeFileSync(path.join(f.root,'tools','bench.mjs'),script); fs.writeFileSync(path.join(f.root,'config'),'pinned'); fs.writeFileSync(path.join(f.root,'candidate'),'c');
+  const spec={interpreter:'node',command:['node','tools/bench.mjs'],binary:'tools/bench.mjs',candidate_binary:'candidate',workload:'tools/bench.mjs',config:'config',
+    binary_digest:fileDigest(path.join(f.root,'tools','bench.mjs')),workload_digest:fileDigest(path.join(f.root,'tools','bench.mjs')),config_digest:sha('pinned'),
+    parser:{kind:'json_file_number_milli',file:'logs/results.json',path:['run',-1,'tps']},unit:'tokens_per_second',repeats:1,output_dirs:['logs']};
+  fs.writeFileSync(path.join(f.home,'specs','bench.json'),JSON.stringify(spec));
+  const result=await f.call('measure_pinned',{spec_id:'bench'}); assert.deepEqual(result.rows.map(r=>r.value_milli),[12250]);
+  assert.deepEqual((await f.call('tree_state',{})).measure_specs,['bench']);
+  // A run that leaves the result file as it was measured nothing.
+  fs.writeFileSync(path.join(f.root,'tools','stale.mjs'),"console.log('no file written')");
+  fs.writeFileSync(path.join(f.home,'specs','stale.json'),JSON.stringify({...spec,command:['node','tools/stale.mjs'],binary:'tools/stale.mjs',binary_digest:fileDigest(path.join(f.root,'tools','stale.mjs'))}));
+  await assert.rejects(f.call('measure_pinned',{spec_id:'stale'}),/measurement failed/);
+  // The interpreter must be the pinned one, and the script the pinned binary.
+  fs.writeFileSync(path.join(f.home,'specs','other.json'),JSON.stringify({...spec,command:['python','tools/bench.mjs']}));
+  await assert.rejects(f.call('measure_pinned',{spec_id:'other'}),/spec refused/);
+});
+test('read pages a long file: where the unread part starts, whether it is complete, and on which line the window begins',async t=>{
+  const f=fixture(t); const lines=Array.from({length:200},(_,i)=>`line ${String(i+1).padStart(3,'0')} ${'x'.repeat(14)}`).join('\n'); // 24 bytes per line
+  fs.writeFileSync(path.join(f.root,'long.txt'),lines); const size=Buffer.byteLength(lines);
+  const first=await f.call('read',{path:'long.txt'}); assert.equal(first.next_offset,1024); assert.equal(first.complete,false); assert.equal(first.start_line,1);
+  const page=await f.call('read',{path:'long.txt',offset:1024}); assert.equal(page.next_offset,3072); assert.equal(page.complete,false);
+  assert.equal(page.start_line,Math.floor(1024/24)+1); assert.equal(page.rows[0].tail_offset,2048);
+  assert.equal(Buffer.byteLength(page.head)+Buffer.byteLength(page.tail),2048);
+  const last=await f.call('read',{path:'long.txt',offset:size-100}); assert.equal(last.next_offset,null); assert.equal(last.complete,true); assert.equal(last.tail,'');
+  fs.writeFileSync(path.join(f.root,'short.txt'),'tiny'); const short=await f.call('read',{path:'short.txt'}); assert.equal(short.complete,true); assert.equal(short.next_offset,null);
+});
 test('run records output hashes and changes but printed numbers remain text',async t=>{
   const f=fixture(t); fs.writeFileSync(path.join(f.root,'run.mjs'),"import fs from 'node:fs'; fs.writeFileSync('changed','x'); console.log('value_milli=9000'); console.error('err')");
   const run=await f.call('run',{command:['node','run.mjs'],cwd:'.'});

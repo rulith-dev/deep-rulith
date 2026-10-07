@@ -50,6 +50,12 @@ it only for a project you trust.
 ## Behaviour
 
 - `eng.run` takes a command line and a project-relative `cwd`.
+- `eng.read(path)` gives the first and last KiB; `eng.read(path, offset)` gives the 2 KiB from `offset`
+  as two adjacent halves (`head`, then `tail`). Both say `next_offset` (where the unread part starts, or
+  null), `complete` and `start_line`.
+- `eng.list` and `eng.search` keep at most 1.8 KB of rows (a receipt carries every row twice within the
+  Worker's inline budget) and add `truncated: true` when they stop short.
+- `eng.tree_state` also lists the pinned measurement specs as `measure_specs`.
 - `eng.write_file` and `eng.patch_file` require the expected SHA-256 of the current file (the
   digest of empty bytes for a new file) and read the bytes back after writing.
 - Long work goes through `eng.job_start`, `eng.job_poll`, `eng.job_stop`. Jobs run in a detached
@@ -59,6 +65,22 @@ it only for a project you trust.
 - Only `eng.test` produces `eng.test_result` and only `eng.measure_pinned` produces measurement
   facts; numbers printed by other commands never become facts.
 - All adapters for one Source serialize through a lock in the kit home.
+
+## Pinned measurements
+
+`<kit home>/specs/<spec_id>.json` pins one measurement; `eng.measure_pinned(spec_id)` runs it `repeats`
+times and records `eng.measurement` facts in integer milli-units. The measuring program is `binary`
+(inside the project, digest-pinned); `candidate_binary`, `workload` and `config` are recorded or
+rechecked on every repeat. Two ways to read the number:
+
+- `json_integer_milli`: the program prints one JSON object (at most 1 KiB) with an integer `field`.
+- `json_file_number_milli`: the program writes a JSON `file` inside the project; `path` (keys and
+  array indexes, negative from the end) names one number, scaled by 1000. The file must be rewritten
+  by the run.
+
+An interpreted harness (for example a Python script) names its `interpreter` (a command name or
+absolute path); the command is then `[interpreter, binary, ...]`. See `pinned-measure.example.json`
+and `pinned-measure-interpreted.example.json`.
 
 ## Closing a Case
 
