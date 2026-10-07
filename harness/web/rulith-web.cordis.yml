@@ -121,6 +121,14 @@
   disabled: true
 - id: ui-brand-official
   disabled: true
+# The right column is Rulith's execution view. dsh's own file browser and terminal act on dsh's workspace folder
+# directly, outside Rulith, so they are not offered.
+- id: ui-sidebar-files
+  disabled: true
+- id: ui-sidebar-terminal
+  disabled: true
+- id: terminal-controller
+  disabled: true
 - id: preset-standard
   disabled: true
 - id: preset-minimal

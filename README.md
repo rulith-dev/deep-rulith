@@ -2,7 +2,9 @@
 
 Deep Rulith is built on [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)
 and gives it [Rulith](https://rulith.ai) as its only tools. It uses dsh's web UI and agent, with a
-profile overlay that adds a Rulith account entry (bottom left) and a Rulith panel (right), replaces
+profile overlay that adds a Rulith account entry (bottom left) and keeps the Rulith Runtime's three
+columns (sessions, conversation, and on the right this environment's execution: Cases, operations,
+frontier and the local Worker), replaces
 every local dsh tool with Rulith's six MCP tools, and turns off dsh features that would act or
 rewrite context outside Rulith (subagents, goals, compaction, result pruning). Reading, editing, building and testing happen only
 through Rulith Actions executed by your own Rulith Worker, so every effect has a receipt on the

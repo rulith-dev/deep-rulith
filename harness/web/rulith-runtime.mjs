@@ -214,9 +214,26 @@ export async function apply(ctx, config = {}) {
       default: return null;
     }
   };
+  // Where each Source this Agent may use is bound, as Console locked it: the same read-only list the Worker loads at
+  // start (GET <work>/sources with its own Connection credentials). Only names, types and locations reach the page.
+  let sourcesCache = null;
+  const boundSources = async (instanceId) => {
+    if (sourcesCache?.instanceId === instanceId && Date.now() - sourcesCache.at < 60_000) return sourcesCache.rows;
+    const row = (readJson(path.join(home, 'registry.json'))?.instances ?? []).find((entry) => entry.id === instanceId);
+    const env = row ? readJson(path.join(row.directory, 'local.json'))?.worker?.env ?? {} : {};
+    if (!env.RULITH_WORK_URL || !env.RULITH_CONNECTION || !env.RULITH_CONNECTION_KEY) return [];
+    const response = await fetch(`${env.RULITH_WORK_URL}/sources`, { signal: AbortSignal.timeout(10_000),
+      headers: { 'x-rulith-connection': env.RULITH_CONNECTION, 'x-rulith-connection-key': env.RULITH_CONNECTION_KEY } });
+    if (!response.ok) return sourcesCache?.rows ?? [];
+    const rows = ((await response.json()).sources ?? []).filter((source) => typeof source?.name === 'string')
+      .map((source) => ({ name: source.name, type: String(source.type ?? ''), location: String(source.access ?? '') }));
+    sourcesCache = { instanceId, at: Date.now(), rows };
+    return rows;
+  };
   const workerTrace = async () => {
     const agent = selectedAgent(home, chosenName());
     if (!agent) return { available: false };
+    const sources = await boundSources(agent.instanceId).catch(() => []);
     if (traceLink?.instanceId !== agent.instanceId)
       traceLink = { instanceId: agent.instanceId, url: new URL((await manager('/manager/instances/open', { instanceId: agent.instanceId, page: '/' })).url) };
     const abort = new AbortController();
@@ -235,7 +252,7 @@ export async function apply(ctx, config = {}) {
       .filter((event) => event?.src === 'worker');
     const rows = events.map(traceRow).filter(Boolean);
     const lastAvailability = [...events].reverse().find((event) => event.type === 'availability');
-    return { available: true, agentName: agent.agentName, state: lastAvailability?.state ?? 'unknown',
+    return { available: true, agentName: agent.agentName, state: lastAvailability?.state ?? 'unknown', sources,
       stuck: rows.some((row) => row.level === 'error'), events: rows.slice(-30).reverse() };
   };
   const routes = {

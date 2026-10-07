@@ -125,27 +125,24 @@ window.__ModuleLoader__.load({
       return typeof value === "string" ? value : JSON.stringify(value);
     }
     const LEVEL = { ok: GREEN, info: GREY, warn: AMBER, error: "#f85149" };
-    function RulithWorker() {
-      const [data, refresh] = usePoll("worker", 6000);
-      const [open, setOpen] = useState(true);
-      const head = (color, text) => h("div", { style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }, onClick: () => setOpen(!open) },
-        dot(color), h("span", { style: { flex: 1 } }, text), h("span", { style: { opacity: 0.6, fontSize: 11 } }, open ? "收起" : "展开"));
-      let body;
-      if (!data) body = head(GREY, "正在读取本机执行…");
-      else if (!data.ok) body = head(AMBER, "读不到本机执行：" + (data.teaching || ""));
-      else if (!data.available) body = head(GREY, "还没有选择 Agent");
-      else body = h("div", null,
-        head(data.state === "online" ? GREEN : AMBER, data.state === "online" ? "本机执行在线" : "本机执行不在线（" + data.state + "）"),
-        data.stuck ? h("div", { role: "alert", style: { marginTop: 6, color: LEVEL.error, fontSize: 12 } },
-          "有调用的结果没有送达，它会一直挂起：在 Console 里处理这次调用，或停止当前回复。") : null,
-        open ? h("div", { style: { marginTop: 6, maxHeight: 220, overflow: "auto" } },
-          (data.events || []).map((e, i) => h("div", { key: i, style: { display: "flex", gap: 6, alignItems: "baseline", padding: "1px 0", fontSize: 12 } },
-            h("span", { style: { opacity: 0.5, flex: "none", fontVariantNumeric: "tabular-nums" } }, e.at ? new Date(e.at).toLocaleTimeString() : ""),
-            h("span", { style: { color: LEVEL[e.level] || "inherit" } }, e.text)))) : null);
-      return h("div", { style: { marginBottom: 12 } }, h("div", { style: section }, "本机执行（Worker）"), body);
-    }
-    function RulithBoard() {
+    const small = { fontSize: 11, opacity: 0.65 };
+    const timeOf = (value) => { const at = new Date(value); return Number.isNaN(at.getTime()) ? "" : at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
+    const block = (title, extra, body) => h("div", { style: { marginBottom: 14 } },
+      h("div", { style: { ...section, display: "flex", justifyContent: "space-between" } }, h("span", null, title), extra ? h("span", { style: { textTransform: "none" } }, extra) : null), body);
+    const none = (text) => h("div", { style: { opacity: 0.6, fontSize: 12 } }, text);
+    const OPERATION_WORDS = { running: "进行中", done: "已确认", failed: "失败", refused: "被拒绝", unknown: "结果未知" };
+    // "ApplyAction worker_<connection>_eng_read_1" reads as "eng.read"; built-in Source tools lose their id suffix.
+    const shortLabel = (label) => String(label || "").replace(/^ApplyAction\s+/, "").replace(/^worker_[a-z0-9]+_/, "").replace(/_\d+$/, "")
+      .replace(/_[0-9a-f]{12}$/, "").replace(/^eng_/, "eng.");
+    const STAGE_WORDS = { at_worker: "在本机执行", held: "等待决定", dispatched: "已派发" };
+
+    // The right column is this environment's execution, as the Rulith Runtime shows it beside a conversation:
+    // Cases, recent operations, the current frontier, and the local Worker's activity.
+    function RulithColumn() {
       const [data, refresh] = usePoll("board", 6000);
+      const [worker, refreshWorker] = usePoll("worker", 6000);
+      const [trace, setTrace] = useState(true);
+      const reload = () => { refresh(); refreshWorker(); };
       if (!data) return h("div", { style: { padding: 12 } }, "正在读取 Rulith…");
       if (!data.ok) return h("div", { style: { padding: 12, color: AMBER } }, data.teaching || "读不到 Rulith");
       if (!data.available) return h("div", { style: { padding: 12 } }, "还没有接入 Rulith：请在左下角登录并选择 Agent。");
@@ -153,33 +150,76 @@ window.__ModuleLoader__.load({
       const board = view.view || view;
       const cases = Array.isArray(board.cases) ? board.cases : (board.cases && board.cases.directory) || [];
       const ops = view.operations || board.operations || [];
-      const actions = board.actions || [];
-      const goals = board.goals || [];
-      const task = board.taskStatus || null;
-      const position = board.position || null;
-      const block = (title, body) => h("div", { style: { marginBottom: 12 } }, h("div", { style: section }, title), body);
-      const rows = (items, render) => items.length ? h("div", null, items.slice(0, 20).map(render)) : h("div", { style: { opacity: 0.6 } }, "无");
-      return h("div", { style: { padding: 12, fontSize: 13, overflow: "auto", height: "100%" } },
-        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
-          h("b", null, "Rulith · " + (data.agentName || "")), h("button", { style: button, onClick: refresh }, "刷新")),
-        h(RulithWorker),
-        position ? block("当前位置", h("div", { style: { fontSize: 12 } }, "写入 " + show(position.writes) + " · 新 Case " + show(position.newCases) + " · 规则 " + show(position.rules))) : null,
-        task ? block("任务状态", h("div", { style: { whiteSpace: "pre-wrap", fontSize: 12 } }, show(task))) : null,
-        block("Case", rows(cases, (c, i) => h("div", { key: i, style: { padding: "2px 0" } }, show(c.caseId || c.case || c.id || c) + (c.status ? " · " + c.status : "")))),
-        goals.length ? block("目标", rows(goals, (g, i) => h("div", { key: i, style: { padding: "2px 0" } }, (g.met || g.satisfied ? "✓ " : "○ ") + show(g.label || g.goal || g.nodeId || g)))) : null,
-        block("最近操作", rows(ops, (o, i) => h("div", { key: i, style: { padding: "2px 0", fontSize: 12 } },
-          [o.tool || o.operation || o.kind, o.action, o.status || o.outcome].filter(Boolean).map(show).join(" · ")))),
-        block("动作", rows(actions, (a, i) => h("div", { key: i, style: { display: "flex", gap: 6, alignItems: "center", padding: "2px 0", fontSize: 12 } },
-          dot(a.status === "ready" ? GREEN : AMBER), h("span", null, show(a.action || a.name)), a.reason ? h("span", { style: { opacity: 0.6 } }, show(a.reason)) : null))));
+      const goals = Array.isArray(board.goals) ? board.goals : [];
+      const frontier = Array.isArray(board.frontier) ? board.frontier : Array.isArray(board.gaps) ? board.gaps : [];
+      const actions = Array.isArray(board.actions) ? board.actions : [];
+      const ready = actions.filter((a) => a.status === "ready").length;
+      const w = worker && worker.ok && worker.available ? worker : null;
+      const online = w && w.state === "online";
+
+      const caseRows = cases.length ? cases.slice(0, 12).map((c, i) => h("div", { key: i, style: { padding: "3px 0", fontSize: 12 } },
+          h("div", null, show(c.caseId || c.case || c.id || c) + (c.label ? " — " + show(c.label) : "")),
+          h("div", { style: small }, [c.caseType, c.status || c.state, c.root ? "root " + show(c.root) : ""].filter(Boolean).map(show).join(" · "))))
+        : none("还没有 Case：开始一项任务后，这里显示它的 Case。");
+      const opRows = ops.length ? ops.slice(0, 12).map((o, i) => h("div", { key: i, style: { padding: "3px 0", fontSize: 12 } },
+          h("div", { style: { display: "flex", gap: 6, alignItems: "center" } }, dot(o.state === "done" ? GREEN : o.state === "running" ? AMBER : o.state ? "#f85149" : GREY),
+            h("span", { style: { overflow: "hidden", textOverflow: "ellipsis" } }, shortLabel(o.label || o.tool))),
+          h("div", { style: small }, [OPERATION_WORDS[o.state] || o.state, STAGE_WORDS[o.stage] || o.stage, o.since ? "自 " + timeOf(o.since) : "", o.summary].filter(Boolean).map(show).join(" · "))))
+        : none("还没有操作。");
+      const frontierRows = goals.length || frontier.length ? h("div", null,
+          goals.slice(0, 12).map((g, i) => h("div", { key: "g" + i, style: { padding: "2px 0", fontSize: 12 } }, (g.met || g.satisfied ? "✓ " : "○ ") + show(g.label || g.goal || g.nodeId || g))),
+          frontier.slice(0, 12).map((f, i) => h("div", { key: "f" + i, style: { padding: "2px 0", fontSize: 12 } }, show(f.label || f.predicate || f.gap || f) + (f.action ? " · " + show(f.action) : ""))))
+        : none("没有进行中的目标。");
+
+      let workerBody;
+      if (!worker) workerBody = none("正在读取本机执行…");
+      else if (!worker.ok) workerBody = h("div", { style: { color: AMBER, fontSize: 12 } }, "读不到本机执行：" + (worker.teaching || ""));
+      else if (!worker.available) workerBody = none("还没有选择 Agent。");
+      else workerBody = h("div", null,
+        h("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12 } }, dot(online ? GREEN : AMBER),
+          h("span", { style: { flex: 1 } }, online ? "在线" : "不在线（" + w.state + "）"),
+          h("span", { style: small }, ready + " 个动作就绪")),
+        (w.sources || []).map((src, i) => h("div", { key: i, style: { fontSize: 12, marginTop: 4 } },
+          h("span", { style: { fontWeight: 600 } }, src.name), h("span", { style: small }, " " + src.type + " → "), h("span", null, src.location || "未绑定位置"))),
+        w.stuck ? h("div", { role: "alert", style: { marginTop: 6, color: LEVEL.error, fontSize: 12 } },
+          "有调用的结果没有送达，它会一直挂起：在 Console 里处理这次调用，或停止当前回复。") : null,
+        h("div", { style: { marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" } },
+          h("span", { style: small }, "最近的执行"),
+          h("button", { style: { ...button, padding: "1px 8px", fontSize: 11 }, onClick: () => setTrace(!trace) }, trace ? "收起" : "展开")),
+        trace ? h("div", { style: { marginTop: 4 } }, (w.events || []).length ? w.events.map((e, i) =>
+          h("div", { key: i, style: { display: "flex", gap: 6, alignItems: "baseline", padding: "1px 0", fontSize: 12 } },
+            h("span", { style: { opacity: 0.5, flex: "none", fontVariantNumeric: "tabular-nums" } }, e.at ? new Date(e.at).toLocaleTimeString() : ""),
+            h("span", { style: { color: LEVEL[e.level] || "inherit", wordBreak: "break-word" } }, e.text))) : none("还没有执行记录。")) : null);
+
+      return h("div", { style: { padding: 12, fontSize: 13, overflow: "auto", height: "100%", boxSizing: "border-box" } },
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+          h("b", null, "Rulith · " + (data.agentName || "")), h("button", { style: button, onClick: reload }, "刷新")),
+        block("Case", cases.length ? String(board.cases && board.cases.total || cases.length) + " 个" : "", caseRows),
+        block("最近操作", "", opRows),
+        block("当前前沿", "", frontierRows),
+        block("本机执行（Worker）", "", workerBody));
     }
 
     const RulithArtwork = () => h("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
       borderRadius: 7, background: "#2ea36b", color: "#fff", fontWeight: 800, fontSize: 16 } }, "R");
     function apply(ctx) {
-      // Listed first on the right sidebar's start page, beside dsh's own files and terminal entries.
+      // Deep Rulith keeps the Rulith Runtime's three columns: sessions, the conversation, and on the right the execution
+      // in this environment. The Rulith column is the right sidebar's entry, and every session opens with it.
       ctx.effect(() => ctx.sidebarRightTabs.register({ id: TAB_ID, kind: TAB_KIND, priority: "builtin", title: () => "Rulith",
         guide: [{ id: "rulith", commandId: "rulith.panel", order: 1, title: () => "Rulith",
-          description: () => "Board、Case 和本机执行（Worker）", icon: RulithArtwork }] }));
+          description: () => "Case、最近操作、当前前沿和本机执行", icon: RulithArtwork }] }));
+      let revealed = false;
+      const ensureColumn = () => setTimeout(() => {
+        try {
+          const session = ctx.sidebarRight.mounted.getSnapshot();
+          if (session === undefined) return;
+          if (!ctx.sidebarRight.tabsIn(session).some((tab) => tab.kind === TAB_KIND)) ctx.sidebarRight.openTabIn(session, TAB_KIND, {});
+          // Shown once per page load; a person who collapses it keeps it collapsed.
+          if (!revealed) { revealed = true; if (!ctx.sidebarRight.isExpanded()) ctx.sidebarRight.toggleExpanded(); }
+        } catch (error) { console.warn("Deep Rulith: could not open the Rulith column", error); }
+      }, 0);
+      ctx.effect(() => ctx.sidebarRight.mounted.subscribe(ensureColumn));
+      ensureColumn();
       ctx.inject(["shortcuts"], (inner) => {
         inner.effect(() => inner.shortcuts.register({ id: "rulith.panel", label: () => "Rulith", aliases: ["rulith", "board", "worker"],
           defaults: {}, regions: ["page", "editable", "terminal"], modals: [],
@@ -191,7 +231,7 @@ window.__ModuleLoader__.load({
       });
       const openBoard = () => { try { ctx.sidebarRight.openTab(TAB_KIND, {}); } catch (error) { console.warn("Deep Rulith: could not open the Rulith tab", error); } };
       ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({ name: "sidebar.footer.action", id: "rulith-account", inject: () => ({ openBoard }) }, RulithAccount));
-      ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({ name: "sidebar.right.pane.tab", key: TAB_ID, inject: () => ({}) }, RulithBoard));
+      ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({ name: "sidebar.right.pane.tab", key: TAB_ID, inject: () => ({}) }, RulithColumn));
       ctx.slots.inject("sidebar.right.pane.tab.title", () => ctx.slots.register({ name: "sidebar.right.pane.tab.title", key: TAB_ID, inject: () => ({}) }, () => h("span", null, "Rulith")));
       ctx.slots.inject("sidebar.brand.mark", () => ctx.slots.inject("sidebar.brand.name", function* () {
         yield ctx.slots.register({ name: "sidebar.brand.mark" }, ({ size }) => h("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center",
