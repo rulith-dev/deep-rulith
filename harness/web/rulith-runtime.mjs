@@ -315,14 +315,35 @@ export async function apply(ctx, config = {}) {
     if (row) {
       if (row.pendingCall?.needsPerson) items.push({ text: `一次调用需要你处理：${row.pendingCall.label || row.pendingCall.tool}`, url: row.console?.runtime });
       if (row.program?.state === 'rejected') items.push({ text: `程序更新被拒：${row.program.refusal?.message || row.program.refusal?.errorCode || ''}`, url: row.console?.configuration });
-      for (const source of row.sources ?? []) if (source.state !== 'ready') items.push({ text: `Source ${source.name} 未就绪（${source.state}）`, url: row.console?.configuration });
+      for (const source of row.sources ?? []) if (source.state !== 'ready') items.push({ text: `Source ${source.name} 未就绪（${source.state}）`,
+        url: row.console?.runtime, source: source.name });
       if (row.key && row.key.state !== 'active') items.push({ text: `本机的 Agent 密钥已失效（${row.key.state}）：打开本机 Rulith 修复`, fix: 'workbench' });
       const here = (row.connections ?? []).filter((connection) => connection.registeredHere && connection.state === 'active');
       if (!here.length) items.push({ text: '这台电脑没有接上本机执行的连接：打开本机 Rulith 修复', fix: 'workbench' });
     }
     return { available: true, gatewayState: all.gatewayState ?? 'unavailable', items };
   };
+  // D-1008d ②: "choose a folder and start". The selected Agent's local instance proposes the folder for a file Source
+  // through its own setup route (the same no-credential proposal the Runtime wizard sends); the person then confirms it
+  // once in the Agent's Runtime page in Console, which binds the Source and pins the tools this computer reported.
+  const proposeFolder = async (body) => {
+    const agent = selectedAgent(home, chosenName());
+    if (!agent) throw new Error('Choose an Agent first');
+    const source = String(body.source ?? '').trim(), folder = String(body.path ?? '').trim();
+    if (!source || !folder) throw new Error('Name the Source and the folder');
+    if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) throw new Error('That folder does not exist on this computer');
+    const open = new URL((await manager('/manager/instances/open', { instanceId: agent.instanceId, page: '/' })).url);
+    const response = await fetch(`${open.origin}/setup/resources`, { method: 'POST', signal: AbortSignal.timeout(30_000),
+      headers: { 'x-rulith-local': open.searchParams.get('k') ?? '', 'content-type': 'application/json' },
+      body: JSON.stringify({ resources: [{ name: source, access: folder }], services: [] }) });
+    const reply = await response.json().catch(() => ({}));
+    if (!response.ok || reply.ok === false) throw new Error(reply.teaching || `The local Rulith answered ${response.status}`);
+    const all = (await manager('/manager/health').catch(() => ({}))).health ?? {};
+    const row = (all.agents ?? []).find((entry) => entry.agentId === agent.agentId);
+    return { proposed: true, url: row?.console?.runtime ?? '' };
+  };
   const routes = {
+    'POST /rulith/api/folder': proposeFolder,
     'GET /rulith/api/health': health,
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
     'GET /rulith/api/worker': workerTrace,

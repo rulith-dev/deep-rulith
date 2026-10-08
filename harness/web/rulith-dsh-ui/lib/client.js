@@ -186,6 +186,19 @@ window.__ModuleLoader__.load({
         : none("没有进行中的目标。");
 
       const needs = health && health.ok && health.available && Array.isArray(health.items) ? health.items : [];
+      const [folder, setFolder] = useState("");
+      const [folderNote, setFolderNote] = useState("");
+      const proposeFolder = async (source) => {
+        setFolderNote("");
+        try {
+          const reply = await api("folder", { source, path: folder });
+          if (!reply.ok) { setFolderNote(reply.teaching || "没有提交成功"); return; }
+          setFolderNote("已提交：在 Console 的 Runtime 页确认一次，就会绑定这个文件夹。");
+          if (reply.url) window.open(reply.url, "_blank", "noopener");
+          refreshHealth();
+        } catch (error) { setFolderNote(String(error)); }
+      };
+      const unbound = needs.filter((item) => item.source);
       let workerBody;
       if (!worker) workerBody = none("正在读取本机执行…");
       else if (!worker.ok) workerBody = h("div", { style: { color: AMBER, fontSize: 12 } }, "读不到本机执行：" + (worker.teaching || ""));
@@ -209,6 +222,13 @@ window.__ModuleLoader__.load({
       return h("div", { style: { padding: 12, fontSize: 13, overflow: "auto", height: "100%", boxSizing: "border-box" } },
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
           h("b", null, "Rulith · " + (data.agentName || "")), h("button", { style: button, onClick: reload }, "刷新")),
+        unbound.length ? block("工作文件夹", "", h("div", null,
+          h("div", { style: { fontSize: 12, marginBottom: 4 } }, "选一个这台电脑上的文件夹给 " + unbound.map((item) => item.source).join("、") + "，然后在 Console 确认一次。"),
+          h("div", { style: { display: "flex", gap: 6 } },
+            h("input", { value: folder, onChange: (event) => setFolder(event.target.value), placeholder: "例如 D:\Work\project",
+              style: { flex: 1, font: "inherit", fontSize: 12, padding: "2px 6px" } }),
+            h("button", { style: { ...button, padding: "1px 8px", fontSize: 11 }, disabled: !folder.trim(), onClick: () => proposeFolder(unbound[0].source) }, "使用这个文件夹")),
+          folderNote ? h("div", { style: { ...small, marginTop: 4 } }, folderNote) : null)) : null,
         needs.length ? block("需要处理", needs.length + " 项", h("div", null, needs.map((item, i) => h("div", { key: i, role: "alert",
           style: { display: "flex", gap: 8, alignItems: "baseline", padding: "2px 0", fontSize: 12, color: LEVEL.error } },
           h("span", { style: { flex: 1 } }, item.text),
