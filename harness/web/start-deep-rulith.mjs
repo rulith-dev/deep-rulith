@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const settingsFile = process.env.DEEP_RULITH_SETTINGS || process.argv[2];
@@ -26,9 +27,42 @@ const env = {
 if (!model) console.error('Deep Rulith: no model is set in Rulith yet; set it under 更多设置 (Rulith workbench) and restart.');
 const overlay = fileURLToPath(new URL('./rulith-web.cordis.yml', import.meta.url));
 const profile = s.profile ?? 'rulith';
+const profilePatch = path.join(s.dshHome, 'profiles', profile, 'cordis.patch.yml');
+
+// 模型路线 rulith-model 写在 profile 自己的补丁层（cordis.patch.yml），不写在 overlay 里。原因有二：
+// 一、dsh 的补丁按条目整段替换 config，overlay 排在最后，若由它设定 llm-pi-ai，人在模型页添加的提供商重启后就被整段覆盖；
+// 二、模型页每次写入都校验全部提供商，读不懂 `!!js` 表达式，overlay 里的表达式会让添加任何提供商都失败。
+// 所以每次启动只更新 rulith-model 这一条路线（取自 Rulith 的模型设置），人加的其他提供商原样保留；
+// 默认模型只在人没有选过别的提供商时才指向 rulith-model。写入的只有模型名与地址，不是机密；密钥仍只经环境变量传入。
+function writeModelRoute() {
+  if (!fs.existsSync(profilePatch)) return;
+  const YAML = createRequire(s.dshBin)('yaml'); // dsh 模型页写这个文件用的同一个库，注释与其他条目原样保留
+  const doc = YAML.parseDocument(fs.readFileSync(profilePatch, 'utf8'));
+  if (doc.errors.length > 0) throw new Error(`Deep Rulith: ${profilePatch} is not valid YAML; fix it and restart`);
+  if (!YAML.isSeq(doc.contents)) doc.contents = doc.createNode([]);
+  const rows = doc.contents;
+  const row = (id) => rows.items.find((item) => YAML.isMap(item) && item.get('id') === id && !item.has('insert'));
+  const route = {
+    api: 'openai-completions', apiKeyEnv: 'RULITH_MODEL_KEY', baseURL: env.RULITH_DSH_MODEL_BASE,
+    compat: { thinkingFormat: 'deepseek' }, models: [{ id: env.RULITH_DSH_MODEL, contextWindow: 1000000 }],
+  };
+  let llm = row('llm-pi-ai');
+  if (!llm) { llm = doc.createNode({ id: 'llm-pi-ai' }); rows.add(llm); }
+  if (!YAML.isMap(llm.get('config'))) llm.set('config', doc.createNode({}));
+  if (!YAML.isMap(llm.getIn(['config', 'providers']))) llm.setIn(['config', 'providers'], doc.createNode({}));
+  llm.setIn(['config', 'providers', 'rulith-model'], doc.createNode(route));
+  const chosen = row('agent-default-model');
+  if (!chosen) rows.add(doc.createNode({ id: 'agent-default-model', config: { provider: 'rulith-model', model: env.RULITH_DSH_MODEL } }));
+  else if (chosen.getIn(['config', 'provider']) === 'rulith-model') chosen.setIn(['config', 'model'], env.RULITH_DSH_MODEL);
+  const text = doc.toString();
+  fs.writeFileSync(`${profilePatch}.tmp`, text);
+  fs.renameSync(`${profilePatch}.tmp`, profilePatch);
+}
+
 // --init creates the profile once from dsh's shipped web template (launcher flags must precede app flags such as --port),
 // then puts the browser plugin into the profile's node_modules (a copy; no links).
 const init = process.argv[3] === '--init';
+if (!init) writeModelRoute();
 const args = init
   ? [s.dshBin, '--profile', profile, '--from-default-profile', 'web', '--patch', overlay, '--dump-config']
   : [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...process.argv.slice(3)];
@@ -37,6 +71,7 @@ child.on('exit', (code) => {
   if (init && code === 0) {
     const target = path.join(s.dshHome, 'profiles', profile, 'node_modules', 'rulith-dsh-ui');
     fs.cpSync(fileURLToPath(new URL('./rulith-dsh-ui', import.meta.url)), target, { recursive: true });
+    writeModelRoute();
     console.log(`Deep Rulith profile "${profile}" created in ${s.dshHome}.`);
   }
   process.exit(code ?? 0);

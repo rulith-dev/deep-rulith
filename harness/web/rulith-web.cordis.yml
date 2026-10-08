@@ -149,22 +149,10 @@
   config:
     agents: []
     maxParallelToolCalls: 1
-- id: agent-default-model
-  config:
-    provider: rulith-model
-    model: !!js process.env.RULITH_DSH_MODEL
-- id: llm-pi-ai
-  config:
-    providers:
-      rulith-model:
-        api: openai-completions
-        apiKeyEnv: RULITH_MODEL_KEY
-        baseURL: !!js process.env.RULITH_DSH_MODEL_BASE
-        compat:
-          thinkingFormat: deepseek
-        models:
-          - id: !!js process.env.RULITH_DSH_MODEL
-            contextWindow: 1000000
+# The model is not set here. The launcher keeps the route rulith-model (from Rulith's model settings) and, until the person
+# picks another, the default model in the profile's own cordis.patch.yml: a patch replaces an entry's whole config and
+# overlays come last, so setting llm-pi-ai here would erase providers added on dsh's Models page, and a `!!js` value here
+# made every Models-page write fail validation.
 - insert:
     - id: rulith-runtime
       name: ./rulith-runtime.mjs
