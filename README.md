@@ -48,8 +48,8 @@ Requires the Node.js version dsh requires.
    your Publisher in Console and install it on the Agent.
 3. Install dsh in its own folder: `npm install @deepseek-ai/dsh@0.2.1-alpha.1`.
 4. Copy [`deep-rulith.example.json`](deep-rulith.example.json) and fill in the paths.
-5. Create the dsh profile once: `node harness/web/start-deep-rulith.mjs <your deep-rulith.json> --init`.
-6. Start: `node harness/web/start-deep-rulith.mjs <your deep-rulith.json>` and open the printed URL.
+5. Copy `deep-rulith.example.json` to `deep-rulith.json` in this folder (ignored by git) and fill in the paths. Create the dsh profile once: `Deep-Rulith.cmd --init` (or `node harness/web/start-deep-rulith.mjs deep-rulith.json --init`).
+6. Start: double-click `Deep-Rulith.cmd` (or `node harness/web/start-deep-rulith.mjs deep-rulith.json`) and open the printed URL.
 7. Bottom left → Rulith account: sign in, choose the Agent, enable the local Worker. Set the model
    (endpoint, model name, key) under 更多设置 (the Rulith workbench), then restart Deep Rulith.
    Install the engineering tools on that Agent's Worker with `engineering-work/install.mjs`
