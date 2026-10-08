@@ -1,6 +1,19 @@
 # Model-visible strings
 
-The six MCP schemas and authority results pass through unchanged. Tool names are `OpenCase`, `ApplyBatch`, `ApplyAction`, `CloseCase`, `QueryBoard`, `ReadArtifact`. Worker Action descriptions supplied by Runtime are `[worker tool] <id>`. Actual paths, hashes, commands, file snippets and process output are data, not fixed kit wording. A read's `head` holds as much file text as fits the receipt (about 5 KB of code) and `tail` at most 1 KiB; for runs, `head` and `tail` each contain at most 1 KiB of output; stdout numbers never map to facts.
+The six MCP schemas pass through unchanged; so does every authority result's content, except how its Board is laid out (below). Tool names are `OpenCase`, `ApplyBatch`, `ApplyAction`, `CloseCase`, `QueryBoard`, `ReadArtifact`. Worker Action descriptions supplied by Runtime are `[worker tool] <id>`. Actual paths, hashes, commands, file snippets and process output are data, not fixed kit wording. A read's `head` holds as much file text as fits the receipt (about 5 KB of code) and `tail` at most 1 KiB; for runs, `head` and `tail` each contain at most 1 KiB of output; stdout numbers never map to facts.
+
+## Board layout in tool results (D-1008e)
+
+Before each model request, the host rewrites the Rulith results the model sees (`harness/web/board-transcript.mjs`; the person's transcript keeps the originals). Line 1 is the answer without its Board: `accepted`, `result`, `teaching`, `errorCode` and the rest as one line of JSON, after dsh's `Error: ` prefix on a refusal. The Board (`view` and `operations`) follows as one item per line: `<section>: <JSON>`, objects spelled out key by key (`position.writes: "open"`), each array element on its own line (`facts: {...}`). Only the latest result carries the whole Board; earlier results keep only their own changes. Fixed header lines:
+
+```text
+Board now (whole Board; + added, - removed since your previous Board):
+Board now (whole Board; your first Board in this conversation, so every line is +):
+Board changes at this step (+ added, - removed; the latest result shows the whole Board):
+Board changes at this step: none (the latest result shows the whole Board).
+```
+
+Line marks: `+ ` added since the conversation's previous Board, `- ` gone since it, two spaces unchanged. Results without a Board (ReadArtifact, transport errors) are not changed.
 
 ## Persona
 
