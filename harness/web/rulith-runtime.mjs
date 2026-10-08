@@ -249,7 +249,10 @@ export async function apply(ctx, config = {}) {
       case 'availability': return row(event.state === 'online' ? 'ok' : 'warn', event.state === 'online' ? '在线' : `不在线（${event.state}）`);
       case 'claimed': return row('info', `领取 ${shortTool(event.id)}`);
       case 'tool-timing': return row(event.outcome === 'returned' ? 'info' : 'warn', `${shortTool(event.tool)} ${event.outcome === 'returned' ? '执行完' : event.outcome}，${((event.durationMs ?? 0) / 1000).toFixed(1)} 秒`);
-      case 'reported': return event.landed === false
+      case 'reported': if (event.undeliverable) return row('error', event.landed
+          ? `${shortTool(event.id)} 的结果送不出（${event.undeliverable}），已转给你处理：在上面“需要处理”里打开 Console 对账`
+          : `${shortTool(event.id)} 的结果送不出（${event.undeliverable}），服务没有接住这条报告：在 Console 里处理这次调用`);
+        return event.landed === false
         ? row('error', `${shortTool(event.id)} 的结果没有送达（${event.reason ?? '未知'}）：这次调用会一直挂起，需要在 Console 里处理`)
         : row(event.ok === false ? 'warn' : 'ok', `${shortTool(event.id)} ${event.ok === false ? '失败' : '已回报'}`);
       case 'log': return event.stderr ? row('warn', event.line ?? '') : null;
@@ -298,7 +301,29 @@ export async function apply(ctx, config = {}) {
     return { available: true, agentName: agent.agentName, state: lastAvailability?.state ?? 'unknown', sources,
       stuck: rows.some((row) => row.level === 'error'), events: rows.slice(-30).reverse() };
   };
+  // What needs a person for the selected Agent, from the local manager's Health read (Runtime 0.12.6+): one line each, with
+  // the place to fix it. Read on a slow poll; the manager itself reads the service only when asked.
+  const health = async () => {
+    const agent = selectedAgent(home, chosenName());
+    if (!agent) return { available: false };
+    let reply;
+    try { reply = await manager('/manager/health'); } catch (error) { return { available: true, unsupported: true, note: String(error.message ?? error).slice(0, 200) }; }
+    const all = reply.health ?? {};
+    const row = (all.agents ?? []).find((entry) => entry.agentId === agent.agentId);
+    const items = [];
+    if (all.device && all.device.signedIn === false) items.push({ text: '这台电脑没有登录 Rulith：在左下角重新登录', fix: 'signin' });
+    if (row) {
+      if (row.pendingCall?.needsPerson) items.push({ text: `一次调用需要你处理：${row.pendingCall.label || row.pendingCall.tool}`, url: row.console?.runtime });
+      if (row.program?.state === 'rejected') items.push({ text: `程序更新被拒：${row.program.refusal?.message || row.program.refusal?.errorCode || ''}`, url: row.console?.configuration });
+      for (const source of row.sources ?? []) if (source.state !== 'ready') items.push({ text: `Source ${source.name} 未就绪（${source.state}）`, url: row.console?.configuration });
+      if (row.key && row.key.state !== 'active') items.push({ text: `本机的 Agent 密钥已失效（${row.key.state}）：打开本机 Rulith 修复`, fix: 'workbench' });
+      const here = (row.connections ?? []).filter((connection) => connection.registeredHere && connection.state === 'active');
+      if (!here.length) items.push({ text: '这台电脑没有接上本机执行的连接：打开本机 Rulith 修复', fix: 'workbench' });
+    }
+    return { available: true, gatewayState: all.gatewayState ?? 'unavailable', items };
+  };
   const routes = {
+    'GET /rulith/api/health': health,
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
     'GET /rulith/api/worker': workerTrace,
     'POST /rulith/api/signin': async () => {

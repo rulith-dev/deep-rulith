@@ -154,8 +154,9 @@ window.__ModuleLoader__.load({
     function RulithColumn() {
       const [data, refresh] = usePoll("board", 6000);
       const [worker, refreshWorker] = usePoll("worker", 6000);
+      const [health, refreshHealth] = usePoll("health", 60000);
       const [trace, setTrace] = useState(true);
-      const reload = () => { refresh(); refreshWorker(); };
+      const reload = () => { refresh(); refreshWorker(); refreshHealth(); };
       if (!data) return h("div", { style: { padding: 12 } }, "正在读取 Rulith…");
       if (!data.ok) return h("div", { style: { padding: 12, color: AMBER } }, data.teaching || "读不到 Rulith");
       if (!data.available) return h("div", { style: { padding: 12 } }, "还没有接入 Rulith：请在左下角登录并选择 Agent。");
@@ -184,6 +185,7 @@ window.__ModuleLoader__.load({
           frontier.slice(0, 12).map((f, i) => h("div", { key: "f" + i, style: { padding: "2px 0", fontSize: 12 } }, show(f.label || f.predicate || f.gap || f) + (f.action ? " · " + show(f.action) : ""))))
         : none("没有进行中的目标。");
 
+      const needs = health && health.ok && health.available && Array.isArray(health.items) ? health.items : [];
       let workerBody;
       if (!worker) workerBody = none("正在读取本机执行…");
       else if (!worker.ok) workerBody = h("div", { style: { color: AMBER, fontSize: 12 } }, "读不到本机执行：" + (worker.teaching || ""));
@@ -195,7 +197,7 @@ window.__ModuleLoader__.load({
         (w.sources || []).map((src, i) => h("div", { key: i, style: { fontSize: 12, marginTop: 4 } },
           h("span", { style: { fontWeight: 600 } }, src.name), h("span", { style: small }, " " + src.type + " → "), h("span", null, src.location || "未绑定位置"))),
         w.stuck ? h("div", { role: "alert", style: { marginTop: 6, color: LEVEL.error, fontSize: 12 } },
-          "有调用的结果没有送达，它会一直挂起：在 Console 里处理这次调用，或停止当前回复。") : null,
+          "有调用的结果没有送达：看上面的“需要处理”，或在 Console 里处理这次调用。") : null,
         h("div", { style: { marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" } },
           h("span", { style: small }, "最近的执行"),
           h("button", { style: { ...button, padding: "1px 8px", fontSize: 11 }, onClick: () => setTrace(!trace) }, trace ? "收起" : "展开")),
@@ -207,6 +209,12 @@ window.__ModuleLoader__.load({
       return h("div", { style: { padding: 12, fontSize: 13, overflow: "auto", height: "100%", boxSizing: "border-box" } },
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
           h("b", null, "Rulith · " + (data.agentName || "")), h("button", { style: button, onClick: reload }, "刷新")),
+        needs.length ? block("需要处理", needs.length + " 项", h("div", null, needs.map((item, i) => h("div", { key: i, role: "alert",
+          style: { display: "flex", gap: 8, alignItems: "baseline", padding: "2px 0", fontSize: 12, color: LEVEL.error } },
+          h("span", { style: { flex: 1 } }, item.text),
+          item.url ? h("a", { href: item.url, target: "_blank", rel: "noopener noreferrer", style: { flex: "none" } }, "在 Console 处理")
+            : item.fix === "workbench" ? h("button", { style: { ...button, padding: "1px 8px", fontSize: 11 }, onClick: openWorkbench }, "打开本机 Rulith")
+            : null)))) : null,
         block("Case", cases.length ? String(board.cases && board.cases.total || cases.length) + " 个" : "", caseRows),
         block("最近操作", "", opRows),
         block("当前前沿", "", frontierRows),
