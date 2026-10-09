@@ -17,6 +17,10 @@ Line marks: `+ ` new since the conversation's previous view, `- ` gone since it,
 
 Write reminder (D-1008j, G1): when the latest Rulith result follows 6 or more Rulith calls without an accepted ApplyBatch, that latest result alone ends with `Note: <n> Rulith calls since your last accepted ApplyBatch. Record what you have learned on the Board before relying on it.` The line disappears when the result is demoted to its changes.
 
+## Earlier reasoning (since 2026-10-09)
+
+Before each model request the host drops the reasoning blocks of model replies that come before the latest user message (`harness/web/thinking-history.mjs`); the current turn, from the latest user message on, keeps its reasoning so the model can continue its own line of thought across tool calls. Text and tool calls are kept; the person's transcript keeps the originals. This is the common practice of model APIs and does not depend on the model server's settings.
+
 ## dsh compaction (on since 2026-10-09)
 
 dsh's `compaction-basic` condenses an older span of the conversation into a summary when the context nears the model's window (dsh defaults: about 80% of the window, keeping room for output and 64K tokens; the newest ~16% stays verbatim; after a context overflow it condenses and retries; `/compact` on demand). The model then sees dsh's fixed checkpoint preamble ("This is an automatically generated checkpoint condensing an earlier span of the conversation …") followed by `<compacted-summary>`…`</compacted-summary>`. Wording is dsh's; see the installed package. The summary is model-written: it is a recap, not evidence; the latest Rulith result still shows the whole view, and the Board holds what was recorded. dsh's result pruner stays off (the board layout above handles Rulith results).

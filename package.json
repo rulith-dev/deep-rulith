@@ -9,7 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=4 test/harness/kit.test.mjs test/harness/board-transcript.test.mjs test/harness/seat.test.mjs test/harness/write-note.test.mjs test/engineering-work/kit.test.mjs"
+    "test": "node --test --test-concurrency=4 test/harness/kit.test.mjs test/harness/board-transcript.test.mjs test/harness/seat.test.mjs test/harness/write-note.test.mjs test/harness/thinking-history.test.mjs test/engineering-work/kit.test.mjs"
   },
   "dependencies": {
     "rulith": "^0.12.7"

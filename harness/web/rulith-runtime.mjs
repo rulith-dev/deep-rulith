@@ -10,6 +10,7 @@ import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { RulithMcp, TOOLS } from '../rulith-mcp.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
+import { installThinkingHistory } from './thinking-history.mjs';
 
 export const name = 'rulith-runtime';
 export const inject = ['tools', 'webServer'];
@@ -74,6 +75,8 @@ export async function apply(ctx, config = {}) {
   const chosenName = () => readJson(selectionFile)?.agentName || config.agentName || undefined;
   // 模型看到的 Rulith 结果：最新一份整块板（+／- 标出变化），更早的只留变化（D-1008e，见 board-transcript.mjs）。
   installBoardTranscript(ctx);
+  // 之前轮次的思考不再发回模型，当前这一轮保留（通用做法；见 thinking-history.mjs）。
+  installThinkingHistory(ctx);
 
   // 1. The Runtime manager: start it unless one already serves this port; stop only the one started here.
   let child = null;
