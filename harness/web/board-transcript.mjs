@@ -112,15 +112,30 @@ export function classify(text) {
 /** 已改写文本里的结果行与板：full 给出当时整块板；delta 给出变化（叠加到上一份上）。 */
 function parseRendered(item) {
   const lines = item.text.split('\n');
-  return { first: lines[0], rows: lines.slice(2).map((line) => ({ mark: line[0], line: line.slice(2) })) };
+  // 只认带标记的板行；最新一份末尾可能附有写板提醒（WRITE_NOTE），它不是板的一部分。
+  const rows = lines.slice(2).filter((line) => /^[ +-] /.test(line)).map((line) => ({ mark: line[0], line: line.slice(2) }));
+  return { first: lines[0], rows };
 }
 
 /**
  * 给出对话里每一份带板结果应有的文本。items 按对话顺序给出 classify 的结果（null 已滤掉）；
  * 返回与之对齐的数组：需要改写的给新文本，已经是应有形态的给 null。
  */
+// G1（D-1008j，取自 galaxy-core 实测：提醒把所学写到板上，写板次数与板上事实都明显增加）：最新一份结果之前，
+// 连续这么多次 Rulith 调用都没有被接受的 ApplyBatch，就在最新一份末尾附一句提醒。只出现在最新一份里，
+// 降为变化时随之消失，所以不在对话里堆积。
+export const WRITE_NOTE_AFTER = 6;
+export const writeNote = (n) => `Note: ${n} Rulith calls since your last accepted ApplyBatch. Record what you have learned on the Board before relying on it.`;
+const acceptedBatch = (item) => {
+  if (item.tool !== 'ApplyBatch') return false;
+  const first = item.kind === 'raw' ? item.first : item.text.split('\n')[0];
+  try { return JSON.parse(first.replace(/^Error: /, '')).accepted === true; } catch { return false; }
+};
+
 export function plan(items) {
   let prev = null; // 上一份板的多重集（行 → 次数）
+  let sinceWrite = 0;
+  for (const item of items) sinceWrite = acceptedBatch(item) ? 0 : sinceWrite + 1;
   return items.map((item, index) => {
     const last = index === items.length - 1;
     let first;
@@ -145,7 +160,8 @@ export function plan(items) {
         curr = expand(next);
       }
     }
-    const wanted = last ? renderFull(first, curr, prev) : renderDelta(first, curr, prev);
+    const note = last && sinceWrite >= WRITE_NOTE_AFTER ? `\n${writeNote(sinceWrite)}` : '';
+    const wanted = last ? renderFull(first, curr, prev) + note : renderDelta(first, curr, prev);
     prev = countLines(curr);
     return wanted === item.text ? null : wanted;
   });
@@ -159,12 +175,18 @@ const textOf = (message) => (Array.isArray(message?.content) ? message.content.m
  */
 export function rewriteSession(session) {
   const found = [];
+  const toolOf = new Map(); // 调用 ID → 工具名，取自模型消息里的工具调用块
   for (const seq of [...session.surface.nodes]) {
     const event = session.eventAt(seq);
+    if (event?.type === 'assistant/message') {
+      for (const block of session.deriveEventMessage(event)?.content ?? []) if (block?.type === 'tool-call') toolOf.set(block.id, block.name);
+      continue;
+    }
     if (event?.type !== 'tool/result') continue;
     const message = session.deriveEventMessage(event);
     const item = classify(textOf(message));
     if (item === null) continue;
+    item.tool = toolOf.get(message.toolCallId);
     found.push({ seq, event, message, item });
   }
   const wanted = plan(found.map((entry) => entry.item));

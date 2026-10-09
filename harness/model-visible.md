@@ -15,6 +15,8 @@ Board changes at this step: none (the latest result shows the whole Board).
 
 Line marks: `+ ` added since the conversation's previous Board, `- ` gone since it, two spaces unchanged. Results without a Board (ReadArtifact, transport errors) are not changed.
 
+Write reminder (D-1008j, G1): when the latest Rulith result follows 6 or more Rulith calls without an accepted ApplyBatch, that latest result alone ends with `Note: <n> Rulith calls since your last accepted ApplyBatch. Record what you have learned on the Board before relying on it.` The line disappears when the result is demoted to its changes.
+
 ## dsh repeat-tool reminder
 
 Kept from dsh (`@deepseek-ai/dsh-repeat-tool-reminder`, thresholds 3, 5 and 8 consecutive calls of one tool with the same key-sorted arguments as received). At the first threshold dsh adds its fixed sentence "You are repeating the exact same tool call with identical arguments. …"; at later thresholds a "Repeated tool call detected:" block naming the tool, the count and the arguments (first 500 characters). Wording is dsh's; see the installed package.
