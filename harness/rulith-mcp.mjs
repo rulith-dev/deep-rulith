@@ -4,11 +4,12 @@ export const TOOLS = Object.freeze(['OpenCase','ApplyBatch','ApplyAction','Close
 export const name = 'rulith-mcp';
 export const inject = ['tools'];
 export class RulithMcp {
-  constructor({ url, token, fetchImpl = fetch, identity = () => {} }) {
+  constructor({ url, token, seat = 'main', fetchImpl = fetch, identity = () => {} }) {
     const endpoint = new URL(url);
     if ((endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('MCP endpoint refused');
     if (!token) throw new Error('Agent token required');
-    this.url = url; this.token = token; this.fetch = fetchImpl; this.identity = identity;
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(seat)) throw new Error('seat refused');
+    this.url = url; this.token = token; this.seat = seat; this.fetch = fetchImpl; this.identity = identity;
     this.queue = Promise.resolve(); this.session = ''; this.agentId = ''; this.nextId = 0; this.closed = false;
   }
   serial(action) {
@@ -65,7 +66,9 @@ export class RulithMcp {
   }
   initialize() {
     return this.serial(async () => {
-      const result = await this.request('initialize', { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: 'rulith-dsh', version: '0.11.0' } });
+      // 席位（C1，D-1008h）：只有非 main 的席位才在 initialize 声明；不声明即 main，旧 Gateway 也照常接受。
+      const capabilities = this.seat === 'main' ? {} : { experimental: { 'rulith/v3': { seat: this.seat } } };
+      const result = await this.request('initialize', { protocolVersion: PROTOCOL, capabilities, clientInfo: { name: 'rulith-dsh', version: '0.11.0' } });
       if (result.protocolVersion !== PROTOCOL || !this.session || !this.agentId) { this.closed = true; throw new Error('MCP handshake refused'); }
       await this.request('notifications/initialized', {}, { notification: true });
       return this.agentId;

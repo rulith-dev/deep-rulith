@@ -16,3 +16,8 @@
 
 Long calls: the Gateway holds a call for up to 50 s and then answers `running`; the host plugin
 keeps waiting until the call settles. `RULITH_DSH_WAIT_SECONDS` sets an optional upper bound.
+
+Seats (C1, D-1008h): each name in the settings' `seats` (`[{"name":"reviewer","label":"审查"}]`) becomes a dsh Agent preset
+`rulith-seat-<name>`. A conversation started with that preset uses its own MCP session declaring the seat at initialize;
+the default preset `rulith` is the seat `main` and declares nothing. Add the seat to the Agent in Console first, or the
+session is refused. Presets carry no plugins and no model-visible text: tell the conversation its role yourself.

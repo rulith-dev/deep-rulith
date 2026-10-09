@@ -108,39 +108,55 @@ export async function apply(ctx, config = {}) {
     status = { state, at: new Date().toISOString(), ...detail };
     try { fs.writeFileSync(statusFile, JSON.stringify(status, null, 2)); } catch {}
   };
-  const drop = () => { if (!current) return; for (const dispose of current.disposers) dispose(); current.bridge.close(); current = null; };
-  const connect = async (token) => {
-    const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, identity() {} });
+  const drop = () => {
+    if (!current) return;
+    for (const dispose of current.disposers) dispose();
+    current.bridge.close();
+    for (const bridge of current.seats.values()) bridge.close();
+    current = null;
+  };
+  const connect = async (token, seat = 'main') => {
+    const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, seat, identity() {} });
     await bridge.initialize();
     const listed = await bridge.list();
     if (listed.nextCursor || listed.tools?.length !== 6 || !TOOLS.every((t) => listed.tools.some((x) => x.name === t)))
       throw new Error('MCP tool surface refused');
     return { bridge, listed };
   };
-  // The live connection for the current credential: a closed one is replaced (one attempt at a time).
-  let reconnecting = null;
-  const liveBridge = async () => {
+  // The live connection for the current credential and one seat: a closed one is replaced (one attempt at a time per seat).
+  // 席位（C1，D-1008h）：每个席位一条独立的 MCP 会话（Gateway 按席位各给一条会话线与执行槽）；main 是缺省。
+  const reconnecting = new Map();
+  const liveBridge = async (seat = 'main') => {
     if (!current) throw new Error('Rulith is not attached: choose an Agent with the Deep Rulith entry.');
-    if (!current.bridge.closed) return current.bridge;
     const holder = current;
-    reconnecting ??= connect(holder.token).then(({ bridge }) => {
-      holder.bridge = bridge;
-      report('attached', { agentName: holder.agentName, tools: [...TOOLS], reconnectedAt: new Date().toISOString() });
+    const existing = seat === 'main' ? holder.bridge : holder.seats.get(seat);
+    if (existing && !existing.closed) return existing;
+    if (!reconnecting.has(seat)) reconnecting.set(seat, connect(holder.token, seat).then(({ bridge }) => {
+      if (seat === 'main') {
+        holder.bridge = bridge;
+        report('attached', { agentName: holder.agentName, tools: [...TOOLS], reconnectedAt: new Date().toISOString() });
+      } else holder.seats.set(seat, bridge);
       return bridge;
-    }).finally(() => { reconnecting = null; });
-    return reconnecting;
+    }).finally(() => { reconnecting.delete(seat); }));
+    return reconnecting.get(seat);
+  };
+  // A conversation's seat is its dsh agent preset: `rulith-seat-<name>` is the seat <name>; every other preset is main.
+  const seatOf = (exec) => {
+    let preset;
+    try { preset = ctx.get('sessionProjections')?.stateOf?.(exec?.agent?.session, 'agentPreset'); } catch { preset = undefined; }
+    return /^rulith-seat-([a-z][a-z0-9_-]{0,31})$/.exec(typeof preset === 'string' ? preset : '')?.[1] ?? 'main';
   };
   const TRANSIENT = /^(MCP transport failed|MCP request refused|MCP response unreadable|MCP connection closed|connection_replaced)$/;
   const READS = new Set(['QueryBoard', 'ReadArtifact']);
-  const invoke = async (name, args) => {
+  const invoke = async (name, args, seat = 'main') => {
     // Reaching Rulith fails before anything is sent: that error is reported as it is.
-    const bridge = await liveBridge();
+    const bridge = await liveBridge(seat);
     try { return await bridge.call(name, args); }
     catch (error) {
       if (!TRANSIENT.test(String(error?.message ?? ''))) throw error;
       // A read changes nothing, so it is asked once more on a fresh connection. A write's outcome is unknown: it is
       // never repeated here, and the model is told how to learn it.
-      if (READS.has(name)) return (await liveBridge()).call(name, args);
+      if (READS.has(name)) return (await liveBridge(seat)).call(name, args);
       throw new Error('The connection to Rulith was interrupted during this call; its outcome is unknown. Do not repeat it: QueryBoard shows its outcome in the operations strip.');
     }
   };
@@ -149,13 +165,15 @@ export async function apply(ctx, config = {}) {
     const disposers = listed.tools.map((tool) => ctx.tools.register({
       name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
       output: { schema: {}, render(_args, value) { return [{ type: 'text', text: JSON.stringify(value) }]; } },
-      async execute(args) {
-        const result = await invoke(tool.name, args);
+      async execute(args, exec) {
+        const seat = seatOf(exec);
+        const call = (name, input) => invoke(name, input, seat);
+        const result = await call(tool.name, args);
         if (result.isError) throw new Error(JSON.stringify(result));
-        return awaitOutcome({ call: invoke }, tool.name, result);
+        return awaitOutcome({ call }, tool.name, result);
       },
     }));
-    current = { token: agent.token, agentName: agent.agentName, bridge, disposers };
+    current = { token: agent.token, agentName: agent.agentName, bridge, seats: new Map(), disposers };
   };
   let busy = false;
   const tick = async () => {

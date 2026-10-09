@@ -59,13 +59,37 @@ function writeModelRoute() {
   fs.renameSync(`${profilePatch}.tmp`, profilePatch);
 }
 
+// 席位（C1，D-1008h）：设置里的 seats 各生成一个 dsh Agent 预设 `rulith-seat-<名>`；选这个预设的对话坐在该席位上，
+// 宿主据此在 initialize 声明席位。默认预设 `rulith` 是 main。席位须先由人在 Console 的 Agent 设置里添加，否则会话被拒。
+// 预设不带任何插件，也不加模型可见文字；角色由人在对话里交代。每次启动重写这个文件，没有 seats 就不传它。
+const seats = Array.isArray(s.seats) ? s.seats : [];
+for (const seat of seats) {
+  if (!/^[a-z][a-z0-9_-]{0,31}$/.test(seat?.name ?? '') || seat.name === 'main') throw new Error(`Deep Rulith: seat name refused: ${JSON.stringify(seat?.name)}`);
+}
+const seatsPatch = path.join(s.dshHome, 'deep-rulith-seats.patch.yml');
+if (seats.length > 0) {
+  fs.mkdirSync(s.dshHome, { recursive: true });
+  fs.writeFileSync(seatsPatch, ['# Written by the Deep Rulith launcher on every start from the seats in its settings; edits are overwritten.', '- insert:',
+    ...seats.flatMap((seat, index) => [
+      `    - id: ${JSON.stringify(`preset-rulith-seat-${seat.name}`)}`,
+      "      name: '@deepseek-ai/dsh-agent-preset'",
+      '      config:',
+      `        id: ${JSON.stringify(`rulith-seat-${seat.name}`)}`,
+      `        name: ${JSON.stringify(String(seat.label ?? seat.name).slice(0, 60))}`,
+      `        description: ${JSON.stringify(`Rulith seat ${seat.name}`)}`,
+      `        order: ${index + 1}`,
+      '        plugins: []',
+    ]), ''].join('\n'));
+}
+const seatArgs = seats.length > 0 ? ['--patch', seatsPatch] : [];
+
 // --init creates the profile once from dsh's shipped web template (launcher flags must precede app flags such as --port),
 // then puts the browser plugin into the profile's node_modules (a copy; no links).
 const init = process.argv[3] === '--init';
 if (!init) writeModelRoute();
 const args = init
-  ? [s.dshBin, '--profile', profile, '--from-default-profile', 'web', '--patch', overlay, '--dump-config']
-  : [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...process.argv.slice(3)];
+  ? [s.dshBin, '--profile', profile, '--from-default-profile', 'web', '--patch', overlay, ...seatArgs, '--dump-config']
+  : [s.dshBin, '--profile', profile, '--patch', overlay, ...seatArgs, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...process.argv.slice(3)];
 const child = spawn(process.execPath, args, { cwd: s.cwd, env, stdio: init ? ['ignore', 'ignore', 'inherit'] : 'inherit' });
 child.on('exit', (code) => {
   if (init && code === 0) {
