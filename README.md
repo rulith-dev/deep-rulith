@@ -5,8 +5,10 @@ and gives it [Rulith](https://rulith.ai) as its only tools. It uses dsh's web UI
 profile overlay that adds a Rulith account entry (bottom left) and keeps the Rulith Runtime's three
 columns (sessions, conversation, and on the right this environment's execution: Cases, operations,
 frontier and the local Worker), replaces
-every local dsh tool with Rulith's six MCP tools, and turns off dsh features that would act or
-rewrite context outside Rulith (subagents, goals, compaction, result pruning). Reading, editing, building and testing happen only
+every local dsh tool with Rulith's six MCP tools, and turns off dsh features that would act outside
+Rulith or cut its results (subagents, goals, workflows, plan mode, result pruning). Long conversations
+are condensed by dsh's automatic compaction; the summary is a recap, not evidence. Reading, editing,
+building and testing happen only
 through Rulith Actions executed by your own Rulith Worker, so every effect has a receipt on the
 Agent's Board and a Case closes only on evidence.
 

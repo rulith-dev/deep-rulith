@@ -65,12 +65,12 @@
   disabled: true
 - id: spill-policy
   disabled: true
+# dsh 的结果裁剪器保持关闭：Rulith 结果由板视图转录（board-transcript.mjs）安排，裁剪器会把它们截成读不懂的片段。
 - id: tool-result-pruner
   disabled: true
-- id: compaction-basic
-  disabled: true
-- id: command-compact
-  disabled: true
+# 自动压缩打开（所有者 2026-10-09：长会话需要它）。dsh 的缺省：上下文到窗口约 80%（再留出输出与 64K 余量）时，把较早的
+# 一段对话压成一份摘要，最近约 16% 原样保留；上下文溢出时先压缩再重试；也可手动 /compact。摘要只是对话的回顾，
+# 不是证据：Board 上记下的才算，最新一份 Rulith 结果照样给出整个视图。
 - id: image-offload
   disabled: true
 # dsh's repeat-tool reminder stays on (thresholds 3, 5, 8; arguments compared key-sorted, as received): when the

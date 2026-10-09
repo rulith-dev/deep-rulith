@@ -17,6 +17,10 @@ Line marks: `+ ` new since the conversation's previous view, `- ` gone since it,
 
 Write reminder (D-1008j, G1): when the latest Rulith result follows 6 or more Rulith calls without an accepted ApplyBatch, that latest result alone ends with `Note: <n> Rulith calls since your last accepted ApplyBatch. Record what you have learned on the Board before relying on it.` The line disappears when the result is demoted to its changes.
 
+## dsh compaction (on since 2026-10-09)
+
+dsh's `compaction-basic` condenses an older span of the conversation into a summary when the context nears the model's window (dsh defaults: about 80% of the window, keeping room for output and 64K tokens; the newest ~16% stays verbatim; after a context overflow it condenses and retries; `/compact` on demand). The model then sees dsh's fixed checkpoint preamble ("This is an automatically generated checkpoint condensing an earlier span of the conversation …") followed by `<compacted-summary>`…`</compacted-summary>`. Wording is dsh's; see the installed package. The summary is model-written: it is a recap, not evidence; the latest Rulith result still shows the whole view, and the Board holds what was recorded. dsh's result pruner stays off (the board layout above handles Rulith results).
+
 ## dsh repeat-tool reminder
 
 Kept from dsh (`@deepseek-ai/dsh-repeat-tool-reminder`, thresholds 3, 5 and 8 consecutive calls of one tool with the same key-sorted arguments as received). At the first threshold dsh adds its fixed sentence "You are repeating the exact same tool call with identical arguments. …"; at later thresholds a "Repeated tool call detected:" block naming the tool, the count and the arguments (first 500 characters). Wording is dsh's; see the installed package.
