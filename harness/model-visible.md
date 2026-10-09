@@ -7,13 +7,13 @@ The six MCP schemas pass through unchanged; so does every authority result's con
 Before each model request, the host rewrites the Rulith results the model sees (`harness/web/board-transcript.mjs`; the person's transcript keeps the originals). Line 1 is the answer without its Board: `accepted`, `result`, `teaching`, `errorCode` and the rest as one line of JSON, after dsh's `Error: ` prefix on a refusal. The Board (`view` and `operations`) follows as one item per line: `<section>: <JSON>`, objects spelled out key by key (`position.writes: "open"`), each array element on its own line (`facts: {...}`). Only the latest result carries the whole Board; earlier results keep only their own changes. Fixed header lines:
 
 ```text
-Board now (whole Board; + added, - removed since your previous Board):
-Board now (whole Board; your first Board in this conversation, so every line is +):
-Board changes at this step (+ added, - removed; the latest result shows the whole Board):
-Board changes at this step: none (the latest result shows the whole Board).
+Board view now (the whole view Rulith returned; + new since your previous view, - gone since then, = unchanged):
+Board view now (the whole view Rulith returned; your first view in this conversation, so every line is +):
+Board view changes at this step (+ new, - gone; unchanged lines left out; the latest result shows the whole view):
+Board view changes at this step: none (the latest result shows the whole view).
 ```
 
-Line marks: `+ ` added since the conversation's previous Board, `- ` gone since it, two spaces unchanged. Results without a Board (ReadArtifact, transport errors) are not changed.
+Line marks: `+ ` new since the conversation's previous view, `- ` gone since it, `= ` unchanged (latest result only). "Whole view" is what Rulith returned: the view itself says what it left out (`rootScope.lossy`, `dropped`). Lines are compared by meaning: an action row that differs only by `description` or `inputSchema` (QueryBoard results carry them, other results do not) is unchanged, and the latest result shows the row as it came. Results without a Board (ReadArtifact, transport errors) are not changed. Results rewritten before 2026-10-09 (old headers `Board now (…` / `Board changes at this step…`, two spaces for unchanged) are still read and are moved to this layout on the next rewrite.
 
 Write reminder (D-1008j, G1): when the latest Rulith result follows 6 or more Rulith calls without an accepted ApplyBatch, that latest result alone ends with `Note: <n> Rulith calls since your last accepted ApplyBatch. Record what you have learned on the Board before relying on it.` The line disappears when the result is demoted to its changes.
 

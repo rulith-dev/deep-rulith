@@ -7,6 +7,10 @@
 //   - 更早的：只留这一步的变化（`+`／`-` 行）。
 // 结果本身（accepted、result、teaching、errorCode 等）每一份都原样保留，所以失败一步的教学不会被压掉。
 //
+// 10-09 模型的反馈（项目内容，事后报告）：表头说“整块板”，而视图自己写着 rootScope.lossy 与 dropped，两者打架——这里
+// 给的其实是“Rulith 这次返回的整个视图”，省略了什么由视图自己说；未变的行只靠两个空格，不醒目，改标 `=`；QueryBoard
+// 的动作行带 description 与 inputSchema、其他结果不带，同一批动作每次交替调用都整批 +/- 一遍，是渲染噪声——比较时不看这两项。
+//
 // 不变式（中文写明，便于审计）：
 //   1. 变化相对的是“这个对话里上一份板”，一步不跳；从第一份板起把各步变化依次叠加，正好得到最新整块板。
 //      第一份板没有前一份，它的每一行都标 `+`，所以历史里第一份就是当时的整块板。
@@ -15,12 +19,13 @@
 //   3. 这不是第二份真相：板的真相仍在 Rulith，这里只是把它沿时间拆成“历次变化 + 最新全量”给模型看。
 //   4. 读不懂的结果（传输错误、ReadArtifact 等不带板的结果）原样不动。
 
-const FULL_PREFIX = 'Board now (';
-const DELTA_PREFIX = 'Board changes at this step';
-export const FULL_HEAD = 'Board now (whole Board; + added, - removed since your previous Board):';
-export const FULL_FIRST = 'Board now (whole Board; your first Board in this conversation, so every line is +):';
-export const DELTA_HEAD = 'Board changes at this step (+ added, - removed; the latest result shows the whole Board):';
-export const DELTA_NONE = 'Board changes at this step: none (the latest result shows the whole Board).';
+// 旧表头（10-09 之前改写过的会话）仍然认得，下一次改写时换成新表头。
+const FULL_PREFIXES = ['Board view now (', 'Board now ('];
+const DELTA_PREFIXES = ['Board view changes at this step', 'Board changes at this step'];
+export const FULL_HEAD = 'Board view now (the whole view Rulith returned; + new since your previous view, - gone since then, = unchanged):';
+export const FULL_FIRST = 'Board view now (the whole view Rulith returned; your first view in this conversation, so every line is +):';
+export const DELTA_HEAD = 'Board view changes at this step (+ new, - gone; unchanged lines left out; the latest result shows the whole view):';
+export const DELTA_NONE = 'Board view changes at this step: none (the latest result shows the whole view).';
 const ERROR_PREFIX = 'Error: ';
 
 /** 板摊成行：对象逐键展开，数组每个元素一行（元素本身是一行 JSON），标量一行。行内不含换行（JSON 已转义）。 */
@@ -59,12 +64,33 @@ const countLines = (lines) => {
 const expand = (counts) => [...counts].flatMap(([line, n]) => Array(n).fill(line));
 const section = (line) => line.slice(0, line.indexOf(': '));
 
-/** 多重集比较：curr 中多出来的行标 `+`；prev 中没有了的行另列为 `-`，放在同一段最后一行之后。 */
+/**
+ * 比较用的身份：动作行去掉说明部分 description 与 inputSchema（只有 QueryBoard 的结果带它们，其他结果不带；它们是同一个
+ * 动作定义的另一种渲染，不是板的变化）。显示仍用原行，所以带说明的结果照样给模型看。其余行的身份就是行本身。
+ */
+export function identity(line) {
+  if (!line.startsWith('actions: ')) return line;
+  try {
+    const row = JSON.parse(line.slice('actions: '.length));
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return line;
+    if (!Object.hasOwn(row, 'inputSchema') && !Object.hasOwn(row, 'description')) return line;
+    const { inputSchema: _schema, description: _description, ...rest } = row;
+    return `actions: ${JSON.stringify(rest)}`;
+  } catch {
+    return line;
+  }
+}
+
+/**
+ * 多重集比较（按 identity）：curr 中多出来的行标 `+`；prev 中没有了的行另列为 `-`，放在同一段最后一行之后。prev 是身份的
+ * 多重集；curr 是本次的原行，显示时照原样。
+ */
 function mark(prev, curr) {
   const remaining = new Map(prev ?? []);
   const rows = curr.map((line) => {
-    const left = remaining.get(line) ?? 0;
-    if (left > 0) { remaining.set(line, left - 1); return { mark: ' ', line }; }
+    const key = identity(line);
+    const left = remaining.get(key) ?? 0;
+    if (left > 0) { remaining.set(key, left - 1); return { mark: '=', line }; }
     return { mark: '+', line };
   });
   // 消失的行按字典序排列，与 prev 是怎样得来的（原样／整块／由变化叠加）无关，重算总得到同一段文本。
@@ -83,7 +109,7 @@ export function renderFull(first, curr, prev) {
 
 /** 历史一份：结果行 + 只有变化的行。 */
 export function renderDelta(first, curr, prev) {
-  const changed = mark(prev, curr).filter((row) => row.mark !== ' ');
+  const changed = mark(prev, curr).filter((row) => row.mark !== '=');
   return [first, changed.length > 0 ? DELTA_HEAD : DELTA_NONE, ...changed.map((row) => `${row.mark} ${row.line}`)].join('\n');
 }
 
@@ -95,8 +121,8 @@ export function renderDelta(first, curr, prev) {
  */
 export function classify(text) {
   const [, second = ''] = text.split('\n', 2);
-  if (second.startsWith(FULL_PREFIX)) return { kind: 'full', text };
-  if (second.startsWith(DELTA_PREFIX)) return { kind: 'delta', text };
+  if (FULL_PREFIXES.some((prefix) => second.startsWith(prefix))) return { kind: 'full', text };
+  if (DELTA_PREFIXES.some((prefix) => second.startsWith(prefix))) return { kind: 'delta', text };
   const isError = text.startsWith(ERROR_PREFIX);
   try {
     const outer = JSON.parse(isError ? text.slice(ERROR_PREFIX.length) : text);
@@ -112,8 +138,9 @@ export function classify(text) {
 /** 已改写文本里的结果行与板：full 给出当时整块板；delta 给出变化（叠加到上一份上）。 */
 function parseRendered(item) {
   const lines = item.text.split('\n');
-  // 只认带标记的板行；最新一份末尾可能附有写板提醒（WRITE_NOTE），它不是板的一部分。
-  const rows = lines.slice(2).filter((line) => /^[ +-] /.test(line)).map((line) => ({ mark: line[0], line: line.slice(2) }));
+  // 只认带标记的板行（`=` 未变；旧会话里未变是两个空格）；最新一份末尾可能附有写板提醒（WRITE_NOTE），它不是板的一部分。
+  const rows = lines.slice(2).filter((line) => /^[ =+-] /.test(line))
+    .map((line) => ({ mark: line[0] === ' ' ? '=' : line[0], line: line.slice(2) }));
   return { first: lines[0], rows };
 }
 
@@ -151,10 +178,11 @@ export function plan(items) {
       } else {
         const next = new Map(prev ?? []);
         for (const row of parsed.rows) {
-          if (row.mark === '+') next.set(row.line, (next.get(row.line) ?? 0) + 1);
+          const key = identity(row.line);
+          if (row.mark === '+') next.set(key, (next.get(key) ?? 0) + 1);
           else if (row.mark === '-') {
-            const left = (next.get(row.line) ?? 0) - 1;
-            if (left > 0) next.set(row.line, left); else next.delete(row.line);
+            const left = (next.get(key) ?? 0) - 1;
+            if (left > 0) next.set(key, left); else next.delete(key);
           }
         }
         curr = expand(next);
@@ -162,7 +190,7 @@ export function plan(items) {
     }
     const note = last && sinceWrite >= WRITE_NOTE_AFTER ? `\n${writeNote(sinceWrite)}` : '';
     const wanted = last ? renderFull(first, curr, prev) + note : renderDelta(first, curr, prev);
-    prev = countLines(curr);
+    prev = countLines(curr.map(identity));
     return wanted === item.text ? null : wanted;
   });
 }
