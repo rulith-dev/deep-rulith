@@ -106,3 +106,19 @@ test('results rewritten before 10-09 (old headers, two-space unchanged lines) ar
   assert.equal(texts[0].split('\n')[1], DELTA_HEAD);
   assert.deepEqual(texts[1].split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"', '+ facts: {"label":"a"}', '= operations: []']);
 });
+
+// rulith/v4（A 包）：视图按目标改名（goals.directory、goalNodes、taskStatus 以 goal 为键、position.newGoals），
+// QueryBoard 另带 observation。转录逐键摊平，不认任何段名，所以照样工作；observation 留在第一行。
+test('a rulith/v4 answer is laid out the same way: goal directory, goal nodes and taskStatus by goal', () => {
+  const v4 = (status, extra = {}) => ({ accepted: true, ...extra,
+    view: { position: { writes: 'open', newGoals: 'open' }, goals: { directory: [{ goal: 'g-1', label: 'tests pass', status }], total: 1 },
+      goalNodes: [{ goal: 'g-1', met: status === 'completed' }], taskStatus: [{ goal: 'g-1', certified: status === 'completed' }] },
+    operations: [] });
+  const texts = plan([raw(v4('running', { observation: { consistency: 'committed' } })), raw(v4('completed', { result: { goals: [] } }))].map(classify));
+  assert.equal(texts[0].split('\n')[0], '{"accepted":true,"observation":{"consistency":"committed"}}');
+  assert.ok(texts[0].split('\n').includes('+ goals.directory: {"goal":"g-1","label":"tests pass","status":"running"}'));
+  assert.deepEqual(texts[1].split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"', '= position.newGoals: "open"',
+    '+ goals.directory: {"goal":"g-1","label":"tests pass","status":"completed"}', '- goals.directory: {"goal":"g-1","label":"tests pass","status":"running"}',
+    '= goals.total: 1', '+ goalNodes: {"goal":"g-1","met":true}', '- goalNodes: {"goal":"g-1","met":false}',
+    '+ taskStatus: {"goal":"g-1","certified":true}', '- taskStatus: {"goal":"g-1","certified":false}', '= operations: []']);
+});

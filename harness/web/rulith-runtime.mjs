@@ -1,6 +1,6 @@
 // Deep Rulith, host half. It keeps the owner's Rulith Runtime manager running beside dsh: sign-in, Agent pairing and the
 // local Worker stay exactly the Runtime's own, reached only through the manager's local API. It gives dsh's agents
-// Rulith's six MCP tools for the selected Agent, and serves the browser half's account entry and Rulith panel under
+// Rulith's five MCP tools for the selected Agent, and serves the browser half's account entry and Rulith panel under
 // /rulith/api on dsh's own server (same origin). Nothing here executes model-authored work: execution happens only in
 // the Runtime's Worker, through Rulith Actions.
 import fs from 'node:fs';
@@ -8,7 +8,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
-import { RulithMcp, TOOLS } from '../rulith-mcp.mjs';
+import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 
 export const name = 'rulith-runtime';
@@ -97,7 +97,7 @@ export async function apply(ctx, config = {}) {
     return reply;
   };
 
-  // 2. The six tools follow the selected Agent. They are registered once per Agent credential and stay registered while
+  // 2. The five tools follow the selected Agent. They are registered once per Agent credential and stay registered while
   //    the connection behind them is replaced. The bridge never retries: any transport failure closes its MCP
   //    connection, whoever made the call (the panel's reads share it). A model mid-turn must not see its tools vanish
   //    over that (2026-10-06: a read failing during a network blip closed the connection, the tools were unregistered
@@ -119,8 +119,7 @@ export async function apply(ctx, config = {}) {
     const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, seat, identity() {} });
     await bridge.initialize();
     const listed = await bridge.list();
-    if (listed.nextCursor || listed.tools?.length !== 6 || !TOOLS.every((t) => listed.tools.some((x) => x.name === t)))
-      throw new Error('MCP tool surface refused');
+    if (!surfaceAccepted(listed)) throw new Error('MCP tool surface refused');
     return { bridge, listed };
   };
   // The live connection for the current credential and one seat: a closed one is replaced (one attempt at a time per seat).

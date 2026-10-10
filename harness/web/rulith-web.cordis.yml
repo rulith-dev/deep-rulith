@@ -1,7 +1,7 @@
 # Deep Rulith: the Rulith edition of DeepSeek Harness (dsh 0.2.1-alpha.1 web profile, base + web-app). dsh's own agent and UI stay;
 # its local tools, dsh-authored model text (except the repeat-tool reminder), DeepSeek account, feedback, telemetry and session uploads are off. The model is the one
 # set in Rulith (any OpenAI-compatible endpoint, through the generic adapter: no DeepSeek-specific headers or identity).
-# Rulith's six tools, the approved persona and the Deep Rulith account entry and panel are added.
+# Rulith's five tools (rulith/v4), the approved persona and the Deep Rulith account entry and panel are added.
 # Paths come from the launcher's environment (start-deep-rulith.mjs); nothing secret is written here.
 - id: tool-plugin-manager
   disabled: true

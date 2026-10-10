@@ -14,16 +14,18 @@ test('MCP pins protocol, serializes calls, strips host metadata, and never retri
   const calls=[]; let live=0; let max=0;
   const client=new RulithMcp({url:'https://example.invalid/mcp',token:'secret',fetchImpl:async(_url,options)=>{
     const body=JSON.parse(options.body); calls.push({body,headers:options.headers}); live++; max=Math.max(max,live); await sleep(10); live--;
-    if(body.method==='initialize')return response({protocolVersion:PROTOCOL,_meta:{'rulith/v2':{agentId:'agent'}}},body.id);
+    if(body.method==='initialize')return response({protocolVersion:PROTOCOL,_meta:{'rulith/v4':{agentId:'agent',focusedGoals:[]}}},body.id);
     if(body.method==='notifications/initialized')return response(undefined,undefined,202);
-    return response({content:[{type:'text',text:'authority'}],_meta:{'rulith/v2':{agentId:'agent'}}},body.id);
+    return response({content:[{type:'text',text:'authority'}],_meta:{'rulith/v4':{agentId:'agent',focusedGoals:[]}}},body.id);
   }});
   assert.equal(await client.initialize(),'agent');
-  const results=await Promise.all([client.call('QueryBoard',{}),client.call('OpenCase',{})]);
+  const results=await Promise.all([client.call('QueryBoard',{}),client.call('EndGoal',{})]);
   assert.equal(max,1); assert.equal(calls[0].body.params.protocolVersion,PROTOCOL);
   assert.equal(calls[2].headers['mcp-protocol-version'],PROTOCOL); assert.equal(calls[2].headers['mcp-session-id'],'session');
+  // QueryBoard is never held, so it carries no progress token; a held tool carries its own.
+  assert.equal(calls[2].body.params._meta,undefined); assert.equal(calls[3].body.params._meta.progressToken,`progress_${calls[3].body.id}`);
   assert.ok(results.every(r=>r._meta===undefined));
-  await assert.rejects(client.call('shell',{}),/tool refused/); assert.equal(calls.length,4);
+  await assert.rejects(client.call('shell',{}),/tool refused/); await assert.rejects(client.call('OpenCase',{}),/tool refused/); assert.equal(calls.length,4);
 });
 test('connection_replaced permanently closes MCP, including queued calls',async()=>{
   let count=0;
@@ -33,7 +35,7 @@ test('connection_replaced permanently closes MCP, including queued calls',async(
 });
 test('protocol mismatch fails closed without downgrade',async()=>{
   let count=0;
-  const client=new RulithMcp({url:'https://example.invalid/mcp',token:'secret',fetchImpl:async(_url,opt)=>{count++;return response({protocolVersion:'2026-07-28',_meta:{'rulith/v2':{agentId:'agent'}}},JSON.parse(opt.body).id);}});
+  const client=new RulithMcp({url:'https://example.invalid/mcp',token:'secret',fetchImpl:async(_url,opt)=>{count++;return response({protocolVersion:'2026-07-28',_meta:{'rulith/v4':{agentId:'agent',focusedGoals:[]}}},JSON.parse(opt.body).id);}});
   await assert.rejects(client.initialize(),/handshake refused/); assert.equal(count,1);
 });
 test('HTTP SSE matching response preserves operations and consumes notifications',async()=>{
@@ -52,7 +54,7 @@ test('gate restricts inherited globals through agent context before work',async(
   try { await applyGate({systemPrompt:{section:value=>{section=value;}},on:(type,cb)=>{assert.equal(type,'agent/created');handler=cb;},provide:(key,value)=>{assert.equal(key,'rulithGate');assert.equal(value,true);}}); handler({agent:{ctx:scoped}}); assert.equal(section.complete,true); assert.equal(section.interpolate,false); assert.equal(section.text,`approved\n\n${ADDENDUM}`); }
   finally { if(previous===undefined)delete process.env.RULITH_DSH_PERSONA;else process.env.RULITH_DSH_PERSONA=previous; fs.rmSync(dir,{recursive:true,force:true}); }
 });
-test('IPC plugin publishes exactly six global tools with proper dsh schemas and renderer',async()=>{
+test('IPC plugin publishes exactly the five v4 global tools with proper dsh schemas and renderer',async()=>{
   const previousProxy=process.env.RULITH_DSH_PROXY; const previousSend=process.send;
   process.env.RULITH_DSH_PROXY='ipc';
   const definitions=[];const effects=[];let published;

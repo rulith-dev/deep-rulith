@@ -1,7 +1,7 @@
 {
   "id": "research_ledger_2",
   "title": "Research ledger",
-  "summary": "Keeps an investigation on the Board: hypotheses with their Case, the data they rest on, dropped directions, and which hypotheses are still open. Each Case shows its ledger as research.ledger.item and research.ledger.case_datum rows.",
+  "summary": "Keeps an investigation on the Board: hypotheses with their goal, the data they rest on, dropped directions, and which hypotheses are still open. Each top-level goal shows its ledger as research.ledger.item and research.ledger.goal_datum rows.",
   "vocabulary": {
     "defines": [
       {
@@ -10,7 +10,7 @@
         "args": [
           "id",
           "claim",
-          "case_id"
+          "goal"
         ]
       },
       {
@@ -21,7 +21,7 @@
           "value",
           "unit",
           "source",
-          "case_id"
+          "goal"
         ]
       },
       {
@@ -57,17 +57,17 @@
         "id": "research.ledger.item",
         "as": "item",
         "args": [
-          "case_id",
+          "goal",
           "hypothesis",
           "claim",
           "state"
         ]
       },
       {
-        "id": "research.ledger.case_datum",
-        "as": "case_datum",
+        "id": "research.ledger.goal_datum",
+        "as": "goal_datum",
         "args": [
-          "case_id",
+          "goal",
           "name",
           "value",
           "unit",
@@ -75,18 +75,18 @@
         ]
       },
       {
-        "id": "research.ledger.case_open",
-        "as": "case_open",
+        "id": "research.ledger.goal_open",
+        "as": "goal_open",
         "args": [
-          "case_id"
+          "goal"
         ]
       },
       {
         "id": "research.ledger.cites",
         "as": "cites",
         "args": [
-          "case_id",
-          "from_case_id"
+          "goal",
+          "from_goal"
         ]
       }
     ],
@@ -104,8 +104,8 @@
   "pins": [
     "is_dropped",
     "item",
-    "case_datum",
-    "case_open"
+    "goal_datum",
+    "goal_open"
   ],
   "rules": [
     {
@@ -136,13 +136,13 @@
         {
           "predicate": "root",
           "args": {
-            "node": "?r"
+            "node": "?g"
           }
         },
         {
           "predicate": "case_context",
           "args": {
-            "root": "?r",
+            "root": "?g",
             "case_type": "?t",
             "case_id": "?k"
           }
@@ -152,7 +152,7 @@
           "args": {
             "id": "?h",
             "claim": "?c",
-            "case_id": "?k"
+            "goal": "?g"
           }
         },
         {
@@ -181,7 +181,7 @@
         {
           "predicate": "item",
           "args": {
-            "case_id": "?k",
+            "goal": "?g",
             "hypothesis": "?h",
             "claim": "?c",
             "state": "open"
@@ -196,13 +196,13 @@
         {
           "predicate": "root",
           "args": {
-            "node": "?r"
+            "node": "?g"
           }
         },
         {
           "predicate": "case_context",
           "args": {
-            "root": "?r",
+            "root": "?g",
             "case_type": "?t",
             "case_id": "?k"
           }
@@ -212,7 +212,7 @@
           "args": {
             "id": "?h",
             "claim": "?c",
-            "case_id": "?k"
+            "goal": "?g"
           }
         },
         {
@@ -226,7 +226,7 @@
         {
           "predicate": "item",
           "args": {
-            "case_id": "?k",
+            "goal": "?g",
             "hypothesis": "?h",
             "claim": "?c",
             "state": "supported"
@@ -241,13 +241,13 @@
         {
           "predicate": "root",
           "args": {
-            "node": "?r"
+            "node": "?g"
           }
         },
         {
           "predicate": "case_context",
           "args": {
-            "root": "?r",
+            "root": "?g",
             "case_type": "?t",
             "case_id": "?k"
           }
@@ -257,7 +257,7 @@
           "args": {
             "id": "?h",
             "claim": "?c",
-            "case_id": "?k"
+            "goal": "?g"
           }
         },
         {
@@ -271,7 +271,7 @@
         {
           "predicate": "item",
           "args": {
-            "case_id": "?k",
+            "goal": "?g",
             "hypothesis": "?h",
             "claim": "?c",
             "state": "refuted"
@@ -286,13 +286,13 @@
         {
           "predicate": "root",
           "args": {
-            "node": "?r"
+            "node": "?g"
           }
         },
         {
           "predicate": "case_context",
           "args": {
-            "root": "?r",
+            "root": "?g",
             "case_type": "?t",
             "case_id": "?k"
           }
@@ -302,7 +302,7 @@
           "args": {
             "id": "?h",
             "claim": "?c",
-            "case_id": "?k"
+            "goal": "?g"
           }
         },
         {
@@ -316,7 +316,7 @@
         {
           "predicate": "item",
           "args": {
-            "case_id": "?k",
+            "goal": "?g",
             "hypothesis": "?h",
             "claim": "?c",
             "state": "dropped"
@@ -325,13 +325,13 @@
       ]
     },
     {
-      "id": "ledger_case_with_open_hypothesis",
-      "label": "A Case with an open hypothesis still has an open question.",
+      "id": "ledger_goal_with_open_hypothesis",
+      "label": "A goal with an open hypothesis still has an open question.",
       "when": [
         {
           "predicate": "item",
           "args": {
-            "case_id": "?k",
+            "goal": "?g",
             "hypothesis": "?h",
             "claim": "?c",
             "state": "open"
@@ -340,27 +340,27 @@
       ],
       "then": [
         {
-          "predicate": "case_open",
+          "predicate": "goal_open",
           "args": {
-            "case_id": "?k"
+            "goal": "?g"
           }
         }
       ]
     },
     {
-      "id": "ledger_case_data",
-      "label": "Each datum recorded for a Case is shown with that Case.",
+      "id": "ledger_goal_data",
+      "label": "Each datum recorded for a goal is shown with that goal.",
       "when": [
         {
           "predicate": "root",
           "args": {
-            "node": "?r"
+            "node": "?g"
           }
         },
         {
           "predicate": "case_context",
           "args": {
-            "root": "?r",
+            "root": "?g",
             "case_type": "?t",
             "case_id": "?k"
           }
@@ -372,15 +372,15 @@
             "value": "?v",
             "unit": "?u",
             "source": "?s",
-            "case_id": "?k"
+            "goal": "?g"
           }
         }
       ],
       "then": [
         {
-          "predicate": "case_datum",
+          "predicate": "goal_datum",
           "args": {
-            "case_id": "?k",
+            "goal": "?g",
             "name": "?n",
             "value": "?v",
             "unit": "?u",
@@ -390,19 +390,19 @@
       ]
     },
     {
-      "id": "ledger_cited_case_data",
-      "label": "Data of a cited Case is shown with the citing Case.",
+      "id": "ledger_cited_goal_data",
+      "label": "Data of a cited goal is shown with the citing goal.",
       "when": [
         {
           "predicate": "root",
           "args": {
-            "node": "?r"
+            "node": "?g"
           }
         },
         {
           "predicate": "case_context",
           "args": {
-            "root": "?r",
+            "root": "?g",
             "case_type": "?t",
             "case_id": "?k"
           }
@@ -410,8 +410,8 @@
         {
           "predicate": "cites",
           "args": {
-            "case_id": "?k",
-            "from_case_id": "?f"
+            "goal": "?g",
+            "from_goal": "?f"
           }
         },
         {
@@ -421,15 +421,15 @@
             "value": "?v",
             "unit": "?u",
             "source": "?s",
-            "case_id": "?f"
+            "goal": "?f"
           }
         }
       ],
       "then": [
         {
-          "predicate": "case_datum",
+          "predicate": "goal_datum",
           "args": {
-            "case_id": "?k",
+            "goal": "?g",
             "name": "?n",
             "value": "?v",
             "unit": "?u",

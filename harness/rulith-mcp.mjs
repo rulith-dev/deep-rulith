@@ -1,8 +1,13 @@
 // One serial HTTP MCP client. No SDK, transport retries, or header logging.
 export const PROTOCOL = '2025-11-25';
-export const TOOLS = Object.freeze(['OpenCase','ApplyBatch','ApplyAction','CloseCase','QueryBoard','ReadArtifact']);
+// rulith/v4（A 包，D-1008i）：恰好这五个工具；OpenCase、CloseCase 已退出，一次切换，不留 v3 路径。
+export const NAMESPACE = 'rulith/v4';
+export const TOOLS = Object.freeze(['QueryBoard','ApplyBatch','ApplyAction','ReadArtifact','EndGoal']);
 export const name = 'rulith-mcp';
 export const inject = ['tools'];
+/** The v4 surface: exactly the five tools, each once, in one page. */
+export const surfaceAccepted = (listed) => !listed?.nextCursor && Array.isArray(listed?.tools) && listed.tools.length === TOOLS.length
+  && new Set(listed.tools.map(t => t.name)).size === TOOLS.length && TOOLS.every(t => listed.tools.some(x => x.name === t));
 export class RulithMcp {
   constructor({ url, token, seat = 'main', fetchImpl = fetch, identity = () => {} }) {
     const endpoint = new URL(url);
@@ -56,7 +61,7 @@ export class RulithMcp {
       this.closed = true; throw new Error(replaced ? 'connection_replaced' : 'MCP request refused');
     }
     if (message?.id !== id || !message.result) { this.closed = true; throw new Error('MCP response unreadable'); }
-    const meta = message.result._meta?.['rulith/v2'] ?? message.result._meta?.['rulith/v3'];
+    const meta = message.result._meta?.[NAMESPACE];
     if (meta?.agentId) {
       if (typeof meta.agentId !== 'string' || !meta.agentId.trim()) { this.closed = true; throw new Error('MCP response unreadable'); }
       if (this.agentId && this.agentId !== meta.agentId) { this.closed = true; throw new Error('MCP identity changed'); }
@@ -66,8 +71,9 @@ export class RulithMcp {
   }
   initialize() {
     return this.serial(async () => {
-      // 席位（C1，D-1008h）：只有非 main 的席位才在 initialize 声明；不声明即 main，旧 Gateway 也照常接受。
-      const capabilities = this.seat === 'main' ? {} : { experimental: { 'rulith/v3': { seat: this.seat } } };
+      // 声明 rulith/v4（形状同 C1 后的 v3）：heldCalls:1——这个宿主给每个被持有的调用带 progressToken，并且等过持有上限；
+      // 席位（C1，D-1008h）只在非 main 时声明，不声明即 main。v3 的 Gateway 不认这个声明，随后的五工具检查拒绝它。
+      const capabilities = { experimental: { [NAMESPACE]: this.seat === 'main' ? { heldCalls: 1 } : { heldCalls: 1, seat: this.seat } } };
       const result = await this.request('initialize', { protocolVersion: PROTOCOL, capabilities, clientInfo: { name: 'rulith-dsh', version: '0.11.0' } });
       if (result.protocolVersion !== PROTOCOL || !this.session || !this.agentId) { this.closed = true; throw new Error('MCP handshake refused'); }
       await this.request('notifications/initialized', {}, { notification: true });
@@ -78,7 +84,9 @@ export class RulithMcp {
   call(name, args) {
     return this.serial(async () => {
       if (!TOOLS.includes(name)) throw new Error('tool refused');
-      const result = await this.request('tools/call', { name, arguments: args });
+      // QueryBoard 从不被持有；其余调用带自己的 progressToken（声明 heldCalls:1 的宿主就这样做）。进度通知不是结果，读流时略过。
+      const progress = name === 'QueryBoard' ? {} : { _meta: { progressToken: `progress_${this.nextId + 1}` } };
+      const result = await this.request('tools/call', { name, arguments: args, ...progress });
       // Host metadata never becomes model content. Keep the authority's result verbatim.
       const { _meta, ...modelResult } = result;
       return modelResult;
@@ -92,7 +100,7 @@ export async function apply(ctx) {
   ctx.effect(() => () => bridge.close());
   await bridge.initialize();
   const listed = await bridge.list();
-  if (listed.nextCursor || listed.tools?.length !== 6 || new Set(listed.tools.map(t => t.name)).size !== 6 || !TOOLS.every(t => listed.tools.some(x => x.name === t))) throw new Error('MCP tool surface refused');
+  if (!surfaceAccepted(listed)) throw new Error('MCP tool surface refused');
   for (const tool of listed.tools) {
     const dispose = ctx.tools.register({ name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
       output: { schema: {}, render(_args, value) { return [{ type: 'text', text: JSON.stringify(value) }]; } },

@@ -102,8 +102,8 @@ where it never changes; later edits of the project copy are ignored. A refused s
 can be corrected under its name. The `self-` prefix stays on every receipt, so the
 owner can review such specs afterwards and tell them from the owner's own.
 
-## Closing a Case
+## Completing a goal
 
-Declare a goal leaf under the Case root with its acceptance, propose with `add_axiom` that the
-exploration is completed when the pinned test passed (`exit_code 0`) at the final generation and
-tree digest, then close the Case. The Board certifies completion only from that test receipt.
+Declare the goal with a `desired` outcome, then propose with `add_axiom` a rule that derives that outcome
+from the pinned test that passed (`exit_code 0`) at the final generation and tree digest. Nobody closes
+the goal: the Board completes it by itself once it certifies the outcome from that test receipt.

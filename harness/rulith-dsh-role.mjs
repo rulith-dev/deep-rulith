@@ -4,7 +4,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { RulithMcp, TOOLS } from './rulith-mcp.mjs';
+import { RulithMcp, surfaceAccepted } from './rulith-mcp.mjs';
 import { inside, killTree, readJson, save } from '../engineering-work/lib.mjs';
 
 export const CAPS = Object.freeze({ steps: 150, wallMs: 90 * 60 * 1000, promptTokens: 25000000 });
@@ -62,7 +62,7 @@ export async function startRole(options, { client, emit = defaultEmit, caps = CA
   const connection = client ?? new RulithMcp({ url: env.RULITH_DSH_MCP_URL ?? `${(env.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/$/,'')}/mcp`, token: env.RULITH_TOKEN });
   const agentId = await connection.initialize();
   const surface = await connection.list();
-  if (surface.nextCursor || surface.tools?.length !== 6 || new Set(surface.tools.map(t=>t.name)).size !== 6 || !TOOLS.every(name=>surface.tools.some(t=>t.name===name))) throw new Error('MCP tool surface refused');
+  if (!surfaceAccepted(surface)) throw new Error('MCP tool surface refused');
   let active; let stopping = false; let reloading = false;
   const stateFile = path.join(home,'rulith-role-state.json');
   const persisted = readJson(stateFile,{agentId,sessions:[],receipts:[]});
