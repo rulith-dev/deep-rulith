@@ -68,9 +68,8 @@
 # dsh 的结果裁剪器保持关闭：Rulith 结果由板视图转录（board-transcript.mjs）安排，裁剪器会把它们截成读不懂的片段。
 - id: tool-result-pruner
   disabled: true
-# 自动压缩打开（所有者 2026-10-09：长会话需要它）。dsh 的缺省：上下文到窗口约 80%（再留出输出与 64K 余量）时，把较早的
-# 一段对话压成一份摘要，最近约 16% 原样保留；上下文溢出时先压缩再重试；也可手动 /compact。摘要只是对话的回顾，
-# 不是证据：Board 上记下的才算，最新一份 Rulith 结果照样给出整个视图。
+# 自动压缩见下面 preset-rulith 的 plugins：dsh 网页版把压缩放在每个 Agent 预设里（主机层的 compaction-basic 与
+# command-compact 由 dsh-web-app 关掉），所以要挂在我们的预设里才生效。
 - id: image-offload
   disabled: true
 # dsh's repeat-tool reminder stays on (thresholds 3, 5, 8; arguments compared key-sorted, as received): when the
@@ -171,11 +170,24 @@
         persona: !!js process.env.RULITH_DSH_PERSONA
     - id: rulith-dsh-ui
       name: rulith-dsh-ui
-    # The only agent preset: no agent-layer plugins. dsh's stock presets carry their own shell, file, web and
-    # subagent tools at the agent layer, which a global tool restriction does not reach, so they stay off.
+    # The only agent preset. dsh's stock presets carry their own shell, file, web and subagent tools at the agent layer,
+    # which a global tool restriction does not reach, so they stay off. Its one agent-layer group is dsh's compaction
+    # (所有者 2026-10-09：长会话需要它)：上下文到窗口约 80%（再留出输出与 64K 余量）时把较早的一段对话压成摘要，最近约 16%
+    # 原样保留；上下文溢出时先压缩再重试；也可手动 /compact。摘要只是对话的回顾，不是证据：Board 上记下的才算，最新一份
+    # Rulith 结果照样给出整个视图。dsh 的结果裁剪器不挂：Rulith 结果由板视图转录安排。
     - id: preset-rulith
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: rulith
         order: 0
-        plugins: []
+        plugins:
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'

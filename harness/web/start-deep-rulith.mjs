@@ -61,7 +61,8 @@ function writeModelRoute() {
 
 // 席位（C1，D-1008h）：设置里的 seats 各生成一个 dsh Agent 预设 `rulith-seat-<名>`；选这个预设的对话坐在该席位上，
 // 宿主据此在 initialize 声明席位。默认预设 `rulith` 是 main。席位须先由人在 Console 的 Agent 设置里添加，否则会话被拒。
-// 预设不带任何插件，也不加模型可见文字；角色由人在对话里交代。每次启动重写这个文件，没有 seats 就不传它。
+// 预设只带与默认预设相同的压缩组（rulith-web.cordis.yml），不加模型可见文字；角色由人在对话里交代。每次启动重写这个文件，
+// 没有 seats 就不传它。
 const seats = Array.isArray(s.seats) ? s.seats : [];
 for (const seat of seats) {
   if (!/^[a-z][a-z0-9_-]{0,31}$/.test(seat?.name ?? '') || seat.name === 'main') throw new Error(`Deep Rulith: seat name refused: ${JSON.stringify(seat?.name)}`);
@@ -78,7 +79,17 @@ if (seats.length > 0) {
       `        name: ${JSON.stringify(String(seat.label ?? seat.name).slice(0, 60))}`,
       `        description: ${JSON.stringify(`Rulith seat ${seat.name}`)}`,
       `        order: ${index + 1}`,
-      '        plugins: []',
+      '        plugins:',
+      '          - id: compaction',
+      '            name: cordis:group',
+      '            group: true',
+      '            isolate:',
+      '              compaction: true',
+      '            config:',
+      "              - id: compaction-basic",
+      "                name: '@deepseek-ai/dsh-compaction-basic'",
+      "              - id: command-compact",
+      "                name: '@deepseek-ai/dsh-command-compact'",
     ]), ''].join('\n'));
 }
 const seatArgs = seats.length > 0 ? ['--patch', seatsPatch] : [];
