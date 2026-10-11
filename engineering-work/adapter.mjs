@@ -33,8 +33,8 @@ export async function perform(tool, args = {}, env = process.env) {
   const ctx = context(env);
   return locked(ctx, async () => {
     let job = readJson(ctx.jobFile, {});
-    // While a job runs it owns the tree's changes: other writes and runs wait, but reads go ahead. Such a read records
-    // no generation step and leaves the recorded tree state alone; the job's poll accounts for what changed.
+    // While a job runs it owns the tree's changes: other writes and runs wait, but reads go ahead. Such a read leaves
+    // the recorded tree state alone; the job's poll accounts for what changed.
     const live = ['starting', 'running', 'stopping'].includes(job.status);
     const observing = live && READ_TOOLS.includes(tool);
     if (live && !observing && !['job_poll', 'job_stop'].includes(tool)) refuse('job live: only poll, stop and reads accepted');
@@ -237,19 +237,21 @@ export async function perform(tool, args = {}, env = process.env) {
       default: refuse('tool refused');
     }
     // A read changes nothing, so the tree after it is the tree before it; a change made meanwhile by someone else is
-    // seen by the next call's walk. (One walk of a large tree takes seconds.)
+    // seen by the next call's walk. (One walk of a large tree takes seconds.) A read's rows carry no generation step:
+    // only the tools that can change the tree report eng.tree_step.
+    const read = READ_TOOLS.includes(tool);
     if (observing) {
-      const out = fitRows(tool, rows.map(row => ({ ...row, from_gen: -1, to_gen: -1 })), 1);
+      const out = fitRows(tool, rows, 1);
       return { rows: out.rows, ...text, ...(more || out.cut ? { truncated: true } : {}) };
     }
-    const after = READ_TOOLS.includes(tool) ? before : tree(ctx);
+    const after = read ? before : tree(ctx);
     if (tool === 'run') { rows[0].tree_after = after.digest; rows[0].changed_files = JSON.stringify(changed(before, after)); }
     const mutated = state.digest !== after.digest;
     const gen = state.gen + (mutated ? 1 : 0);
     if (!Number.isSafeInteger(gen)) refuse('generation exhausted');
     const step = mutated ? { from_gen: state.gen, to_gen: gen } : { from_gen: -1, to_gen: -1 };
-    // Replay the genuine first edge after the latest passing test. If an adapter
-    // finished but its Worker receipt was lost, a later read still invalidates it.
+    // Replay the genuine first edge after the latest passing test. If an adapter finished but its Worker receipt was
+    // lost, or a read saw the change first, the next receipt of a tool that can change the tree still invalidates it.
     let invalidation = state.invalidation;
     if (mutated && state.test_gen === state.gen) invalidation = step;
     const edges = invalidation && invalidation.from_gen !== step.from_gen ? [invalidation,step] : [step];
@@ -257,7 +259,7 @@ export async function perform(tool, args = {}, env = process.env) {
     if (tool === 'test') { rows[0].tree_digest = after.digest; rows[0].gen = gen; }
     const testGen = tool === 'test' && rows[0].exit_code === 0 ? gen : state.test_gen;
     save(ctx.stateFile, { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}) });
-    const out = fitRows(tool, rows.flatMap(row => edges.map(edge => ({ ...row, ...edge }))), edges.length);
+    const out = read ? fitRows(tool, rows, 1) : fitRows(tool, rows.flatMap(row => edges.map(edge => ({ ...row, ...edge }))), edges.length);
     return { rows: out.rows, ...text, ...(more || out.cut ? { truncated: true } : {}) };
   });
 }

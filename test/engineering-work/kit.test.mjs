@@ -81,8 +81,8 @@ test('tree digest is deterministic, skips pinned output dirs, and never calls gi
 test('generation tracks actual changes; passing test is invalidated and its edge replayed',async t=>{
   const f=fixture(t); const pass=await f.call('test',{}); assert.equal(pass.rows[0].gen,0); assert.equal(pass.rows[0].from_gen,-1);
   const edit=await f.call('write_file',{path:'a',text:'a',expect_digest:sha('')}); assert.equal(edit.rows[0].from_gen,0);
-  const read=await f.call('read',{path:'a'}); assert.ok(read.rows.some(r=>r.from_gen===pass.rows[0].gen));
-  const next=await f.call('test',{}); assert.equal(next.rows[0].gen,1); assert.ok(next.rows.every(r=>r.from_gen!==1));
+  const read=await f.call('read',{path:'a'}); assert.ok(read.rows.every(r=>r.from_gen===undefined&&r.to_gen===undefined));
+  const next=await f.call('test',{}); assert.equal(next.rows[0].gen,1); assert.ok(next.rows.every(r=>r.from_gen!==1)); assert.ok(next.rows.some(r=>r.from_gen===pass.rows[0].gen));
   const same=await f.call('write_file',{path:'a',text:'a',expect_digest:sha('a')}); assert.ok(same.rows.every(r=>r.from_gen!==1));
   assert.equal((await f.call('tree_state',{})).rows[0].gen,1);
   await assert.rejects(f.call('test',{command:['echo','fake']}),/no arguments/);
@@ -212,7 +212,7 @@ test('job survives adapter exit, blocks other tools, then poll and stop kill des
   assert.ok(fs.statSync(path.join(f.root,'job-heart')).size>0);
   for(const name of ['write_file','run','test','measure_pinned','job_start']) await assert.rejects(f.call(name,{}),/job live/);
   // Reads go ahead while the job runs, and record no generation step of their own.
-  const seen=await f.call('list',{path:'.'}); assert.ok(seen.rows.some(r=>r.path==='job.mjs')); assert.ok(seen.rows.every(r=>r.from_gen===-1));
+  const seen=await f.call('list',{path:'.'}); assert.ok(seen.rows.some(r=>r.path==='job.mjs')); assert.ok(seen.rows.every(r=>r.from_gen===undefined));
   const poll=await f.call('job_poll',{job_id:id,wait_s:0}); assert.equal(poll.rows[0].status,'running');
   const stop=await f.call('job_stop',{job_id:id}); assert.equal(stop.rows[0].status,'stopped');
   const bytes=fs.statSync(path.join(f.root,'job-heart')).size; await sleep(200); assert.equal(fs.statSync(path.join(f.root,'job-heart')).size,bytes);
@@ -231,11 +231,42 @@ test('manifest matches Worker scalar mapping',t=>{
   for(const [id,tool]of Object.entries(manifest.tools)){assert.match(id,/@[1-9][0-9]*$/);assertParamTable(tool.params,id);assertReturnRows(tool.returns,id);}
   for(const [id,tool]of Object.entries(manifest.tools)) { assert.equal(tool.adapter,'run'); assert.deepEqual(tool.sourceTypes,['file']); assert.ok(tool.returns.length<=32); assert.ok(tool.returns.every(r=>Object.keys(r.args).length<=32)); assert.ok(fs.existsSync(path.join(workspace,'engineering-work',`${id.slice(4,-2)}.mjs`))); }
 });
+test('read tools declare only their own observation, never eng.tree_step; tools that can change the tree still do',()=>{
+  const tools=JSON.parse(fs.readFileSync(new URL('../../engineering-work/worker-tools.json',import.meta.url))).tools;
+  const predicates=id=>tools[id].returns.map(r=>r.predicate);
+  // The Gateway offers a Worker Tool for direct use only with a nonempty returns, so each read keeps one observation.
+  assert.deepEqual(predicates('eng.list@1'),['eng.file']); assert.deepEqual(predicates('eng.read@1'),['eng.file_read']);
+  assert.deepEqual(predicates('eng.search@1'),['eng.match']); assert.deepEqual(predicates('eng.tree_state@1'),['eng.tree']);
+  for(const id of ['eng.write_file@1','eng.patch_file@1','eng.run@1','eng.job_start@1','eng.job_poll@1','eng.job_stop@1','eng.test@1','eng.measure_pinned@1'])
+    assert.deepEqual(tools[id].returns.find(r=>r.predicate==='eng.tree_step'),{predicate:'eng.tree_step',args:{from_gen:'$from_gen',to_gen:'$to_gen'}},id);
+});
+test('evidence predicates keep their exact mappings',()=>{
+  const tools=JSON.parse(fs.readFileSync(new URL('../../engineering-work/worker-tools.json',import.meta.url))).tools;
+  const columns=names=>Object.fromEntries(names.map(n=>[n,'$'+n]));
+  const fileState={predicate:'eng.file_state',args:columns(['path','prev_digest','digest','readback_digest','bytes'])};
+  const jobState={predicate:'eng.job_state',args:columns(['job_id','status','exit_code','command_digest','tree_before'])};
+  const expected={
+    'eng.write_file@1':fileState,'eng.patch_file@1':fileState,'eng.job_start@1':jobState,'eng.job_poll@1':jobState,'eng.job_stop@1':jobState,
+    'eng.run@1':{predicate:'eng.command_result',args:columns(['run_id','command_digest','exit_code','timed_out','duration_ms','stdout_digest','stderr_digest','stdout_bytes','stderr_bytes','tree_before','tree_after','changed_files'])},
+    'eng.test@1':{predicate:'eng.test_result',args:columns(['spec_digest','gen','tree_digest','exit_code'])},
+    'eng.measure_pinned@1':{predicate:'eng.measurement',args:columns(['spec_id','repeat','value_milli','unit','spec_digest','binary_digest','candidate_digest','workload_digest','config_digest'])},
+    'eng.tree_state@1':{predicate:'eng.tree',args:columns(['gen','tree_digest'])},
+  };
+  for(const [id,row] of Object.entries(expected)) assert.deepEqual(tools[id].returns[0],row,id);
+});
+test('a change a read sees first is still invalidated by the next receipt of a tool that can change the tree',async t=>{
+  const f=fixture(t); const pass=await f.call('test',{}); assert.equal(pass.rows[0].exit_code,0); assert.equal(pass.rows[0].gen,0);
+  fs.writeFileSync(path.join(f.root,'outside.txt'),'edited outside the tools');
+  const seen=await f.call('tree_state',{}); assert.equal(seen.rows[0].gen,1); assert.deepEqual(Object.keys(seen.rows[0]).sort(),['gen','tree_digest']);
+  const run=await f.call('run',{command:'node test.mjs',cwd:'.'});
+  assert.ok(run.rows.some(r=>r.from_gen===0&&r.to_gen===1),JSON.stringify(run.rows.map(r=>[r.from_gen,r.to_gen])));
+});
 test('real Worker maps changing and no-change receipts without fabricating numeric facts',async t=>{
   const f=fixture(t); const manifest=JSON.parse(fs.readFileSync(new URL('../../engineering-work/worker-tools.json',import.meta.url)));
   for(const [tool,args]of [['tree_state',{}],['write_file',{path:'a',text:'abc',expect_digest:sha('')}],['read',{path:'a'}],['search',{path:'.',query:'abc'}],['list',{path:'.'}],['run',{command:['node','test.mjs'],cwd:'.'}],['test',{}]]) {
-    const result=await f.call(tool,args); const facts=resultFactsFromRows(manifest.tools[`eng.${tool}@1`],result.rows);
-    assert.equal(facts.length,result.rows.length*2);
+    const declared=manifest.tools[`eng.${tool}@1`]; const result=await f.call(tool,args); const facts=resultFactsFromRows(declared,result.rows);
+    assert.equal(facts.length,result.rows.length*declared.returns.length);
+    assert.equal(facts.some(f=>f.predicate==='eng.tree_step'),!['tree_state','read','search','list'].includes(tool),tool);
     assert.ok(facts.every(f=>f.predicate!=='eng.measurement'));
   }
 });
@@ -245,7 +276,7 @@ test('finite detached job survives its adapter, then finishes through poll',asyn
   const adapter=fileURLToPath(new URL('../../engineering-work/job_start.mjs',import.meta.url));
   const receipt=JSON.parse(execFileSync(process.execPath,[adapter,JSON.stringify({command:['node','job.mjs'],cwd:'.'})],{env:f.env,encoding:'utf8'}));
   const id=receipt.rows[0].job_id;
-  const look=await f.call('tree_state',{}); assert.equal(look.rows[0].from_gen,-1); assert.equal(look.rows[0].gen,0);
+  const look=await f.call('tree_state',{}); assert.equal(look.rows[0].from_gen,undefined); assert.equal(look.rows[0].gen,0);
   const done=await f.call('job_poll',{job_id:id,wait_s:2}); assert.equal(done.rows[0].status,'done'); assert.equal(done.rows[0].exit_code,0); assert.equal(fs.readFileSync(path.join(f.root,'job-output'),'utf8'),'done');
   const facts=resultFactsFromRows(JSON.parse(fs.readFileSync(new URL('../../engineering-work/worker-tools.json',import.meta.url))).tools['eng.job_poll@1'],done.rows);assert.ok(facts.some(f=>f.predicate==='eng.tree_step'&&f.args.from_gen===0));
 });
@@ -290,8 +321,8 @@ test('an empty expect_digest creates a new file and refuses to replace one; a wr
   const made=await f.call('write_file',{path:'new.txt',text:'hello',expect_digest:''}); assert.equal(made.rows[0].digest,sha('hello')); assert.equal(made.rows[0].to_gen,1);
   await assert.rejects(f.call('write_file',{path:'new.txt',text:'again',expect_digest:''}),/file digest changed/);
   await assert.rejects(f.call('patch_file',{path:'new.txt',old_text:'hello',text:'x',expect_digest:''}),/file digest changed/);
-  // A read does not walk the tree again afterwards, and reports no generation step of its own.
-  const read=await f.call('read',{path:'new.txt'}); assert.equal(read.rows[0].from_gen,-1);
+  // A read does not walk the tree again afterwards, and reports no generation step.
+  const read=await f.call('read',{path:'new.txt'}); assert.equal(read.rows[0].from_gen,undefined);
 });
 test('**/name skips that folder at any depth; a skipped folder is still searched when the path names it',async t=>{
   const f=fixture(t); fs.writeFileSync(path.join(f.home,'settings.json'),JSON.stringify({treeExclude:['**/node_modules','tmp']}));

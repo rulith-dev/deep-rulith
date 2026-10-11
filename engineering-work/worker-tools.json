@@ -14,13 +14,6 @@
             "path": "$path",
             "kind": "$kind"
           }
-        },
-        {
-          "predicate": "eng.tree_step",
-          "args": {
-            "from_gen": "$from_gen",
-            "to_gen": "$to_gen"
-          }
         }
       ],
       "sourceTypes": [
@@ -50,13 +43,6 @@
             "offset": "$offset",
             "tail_offset": "$tail_offset"
           }
-        },
-        {
-          "predicate": "eng.tree_step",
-          "args": {
-            "from_gen": "$from_gen",
-            "to_gen": "$to_gen"
-          }
         }
       ],
       "sourceTypes": [
@@ -84,13 +70,6 @@
             "line": "$line",
             "digest": "$digest"
           }
-        },
-        {
-          "predicate": "eng.tree_step",
-          "args": {
-            "from_gen": "$from_gen",
-            "to_gen": "$to_gen"
-          }
         }
       ],
       "sourceTypes": [
@@ -113,13 +92,6 @@
           "args": {
             "gen": "$gen",
             "tree_digest": "$tree_digest"
-          }
-        },
-        {
-          "predicate": "eng.tree_step",
-          "args": {
-            "from_gen": "$from_gen",
-            "to_gen": "$to_gen"
           }
         }
       ],
