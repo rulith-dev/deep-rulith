@@ -380,11 +380,13 @@ export async function apply(ctx, config = {}) {
       const state = await manager('/manager/state');
       const agent = (state.device?.agents ?? []).find((row) => row.id === String(body.agentId ?? ''));
       if (!agent) throw new Error('Choose an Agent of the signed-in account');
-      // Reconnecting an existing Connection or creating a new one is the person's explicit choice (D-1007b): an Agent
-      // that offers Connections to reconnect is not set up until the request says which.
+      // Reconnecting keeps the Agent's Actions and Source bindings on the Connection they belong to; a new Connection
+      // leaves them behind. So reconnecting is the default when the Agent offers exactly one Connection (owner, 10-11);
+      // a new Connection still needs newConnection:true, and several offered Connections still need a choice (D-1007b).
       const offered = (Array.isArray(agent.reconnectable) ? agent.reconnectable : []).map((row) => String(row.connectionId));
-      const reconnect = typeof body.reconnectConnectionId === 'string' ? body.reconnectConnectionId : '';
       const instance = (state.instances ?? []).find((row) => row.agentId === agent.id && row.mode === 'local_agent' && !row.signedOutAt);
+      const reconnect = typeof body.reconnectConnectionId === 'string' ? body.reconnectConnectionId
+        : !instance?.paired && offered.length === 1 && body.newConnection !== true ? offered[0] : '';
       if (!instance?.paired && offered.length && !reconnect && body.newConnection !== true)
         throw new Error('Choose whether to reconnect one of this Agent\'s existing connections or to create a new one');
       if (reconnect && !offered.includes(reconnect)) throw new Error('That connection cannot be reconnected now; refresh and choose again');
