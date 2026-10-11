@@ -23,25 +23,6 @@
         ]
       },
       {
-        "id": "eng.file",
-        "as": "eng_file",
-        "args": [
-          "path",
-          "kind"
-        ]
-      },
-      {
-        "id": "eng.file_read",
-        "as": "eng_file_read",
-        "args": [
-          "path",
-          "digest",
-          "bytes",
-          "offset",
-          "tail_offset"
-        ]
-      },
-      {
         "id": "eng.file_state",
         "as": "eng_file_state",
         "args": [
@@ -61,15 +42,6 @@
           "exit_code",
           "command_digest",
           "tree_before"
-        ]
-      },
-      {
-        "id": "eng.match",
-        "as": "eng_match",
-        "args": [
-          "path",
-          "line",
-          "digest"
         ]
       },
       {

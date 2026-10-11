@@ -231,12 +231,12 @@ test('manifest matches Worker scalar mapping',t=>{
   for(const [id,tool]of Object.entries(manifest.tools)){assert.match(id,/@[1-9][0-9]*$/);assertParamTable(tool.params,id);assertReturnRows(tool.returns,id);}
   for(const [id,tool]of Object.entries(manifest.tools)) { assert.equal(tool.adapter,'run'); assert.deepEqual(tool.sourceTypes,['file']); assert.ok(tool.returns.length<=32); assert.ok(tool.returns.every(r=>Object.keys(r.args).length<=32)); assert.ok(fs.existsSync(path.join(workspace,'engineering-work',`${id.slice(4,-2)}.mjs`))); }
 });
-test('read tools declare only their own observation, never eng.tree_step; tools that can change the tree still do',()=>{
+test('read tools write no Board facts; tree_state reports only eng.tree; tools that can change the tree still report eng.tree_step',()=>{
   const tools=JSON.parse(fs.readFileSync(new URL('../../engineering-work/worker-tools.json',import.meta.url))).tools;
   const predicates=id=>tools[id].returns.map(r=>r.predicate);
-  // The Gateway offers a Worker Tool for direct use only with a nonempty returns, so each read keeps one observation.
-  assert.deepEqual(predicates('eng.list@1'),['eng.file']); assert.deepEqual(predicates('eng.read@1'),['eng.file_read']);
-  assert.deepEqual(predicates('eng.search@1'),['eng.match']); assert.deepEqual(predicates('eng.tree_state@1'),['eng.tree']);
+  // Reads write no Board facts: their entries, text and matches reach the model in the call result (D-1011a, owner 10-11).
+  assert.deepEqual(predicates('eng.list@1'),[]); assert.deepEqual(predicates('eng.read@1'),[]);
+  assert.deepEqual(predicates('eng.search@1'),[]); assert.deepEqual(predicates('eng.tree_state@1'),['eng.tree']);
   for(const id of ['eng.write_file@1','eng.patch_file@1','eng.run@1','eng.job_start@1','eng.job_poll@1','eng.job_stop@1','eng.test@1','eng.measure_pinned@1'])
     assert.deepEqual(tools[id].returns.find(r=>r.predicate==='eng.tree_step'),{predicate:'eng.tree_step',args:{from_gen:'$from_gen',to_gen:'$to_gen'}},id);
 });

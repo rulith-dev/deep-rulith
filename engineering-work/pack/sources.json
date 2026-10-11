@@ -10,11 +10,8 @@
       "type": "file",
       "words": [
         "eng.command_result",
-        "eng.file",
-        "eng.file_read",
         "eng.file_state",
         "eng.job_state",
-        "eng.match",
         "eng.measurement",
         "eng.test_result",
         "eng.tree",

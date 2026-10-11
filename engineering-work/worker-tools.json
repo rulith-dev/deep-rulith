@@ -7,15 +7,7 @@
       "params": {
         "path": "string"
       },
-      "returns": [
-        {
-          "predicate": "eng.file",
-          "args": {
-            "path": "$path",
-            "kind": "$kind"
-          }
-        }
-      ],
+      "returns": [],
       "sourceTypes": [
         "file"
       ],
@@ -33,18 +25,7 @@
         "path": "string",
         "offset": "number?"
       },
-      "returns": [
-        {
-          "predicate": "eng.file_read",
-          "args": {
-            "path": "$path",
-            "digest": "$digest",
-            "bytes": "$bytes",
-            "offset": "$offset",
-            "tail_offset": "$tail_offset"
-          }
-        }
-      ],
+      "returns": [],
       "sourceTypes": [
         "file"
       ],
@@ -62,16 +43,7 @@
         "path": "string",
         "query": "string"
       },
-      "returns": [
-        {
-          "predicate": "eng.match",
-          "args": {
-            "path": "$path",
-            "line": "$line",
-            "digest": "$digest"
-          }
-        }
-      ],
+      "returns": [],
       "sourceTypes": [
         "file"
       ],
