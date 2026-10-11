@@ -9,26 +9,40 @@ export const inject = ['tools'];
 export const surfaceAccepted = (listed) => !listed?.nextCursor && Array.isArray(listed?.tools) && listed.tools.length === TOOLS.length
   && new Set(listed.tools.map(t => t.name)).size === TOOLS.length && TOOLS.every(t => listed.tools.some(x => x.name === t));
 export class RulithMcp {
-  constructor({ url, token, seat = 'main', fetchImpl = fetch, identity = () => {} }) {
+  constructor({ url, token, seat = 'main', fetchImpl = fetch, identity = () => {}, timeoutMs = 75_000, ceilingMs = 600_000 }) {
     const endpoint = new URL(url);
     if ((endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('MCP endpoint refused');
     if (!token) throw new Error('Agent token required');
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(seat)) throw new Error('seat refused');
     this.url = url; this.token = token; this.seat = seat; this.fetch = fetchImpl; this.identity = identity;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(ceilingMs) || ceilingMs < timeoutMs) throw new Error('MCP wait bounds refused');
+    this.timeoutMs = timeoutMs; this.ceilingMs = ceilingMs;
     this.queue = Promise.resolve(); this.session = ''; this.agentId = ''; this.nextId = 0; this.closed = false;
   }
   serial(action) {
     const next = this.queue.then(() => { if (this.closed) throw new Error('MCP connection closed'); return action(); });
     this.queue = next.catch(() => {}); return next;
   }
-  async request(method, params, { notification = false } = {}) {
+  async request(method, params, options = {}) {
+    const controller = new AbortController(); this.requestAbort = controller;
+    const ceiling = Date.now() + this.ceilingMs;
+    let timer;
+    const extend = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(), Math.max(0, Math.min(this.timeoutMs, ceiling - Date.now())));
+      timer.unref?.();
+    };
+    extend();
+    try { return await this.readRequest(method, params, options, controller.signal, extend); }
+    finally { clearTimeout(timer); if (this.requestAbort === controller) this.requestAbort = undefined; }
+  }
+  async readRequest(method, params, { notification = false } = {}, signal, extend) {
     if (this.closed) throw new Error('MCP connection closed');
     const id = ++this.nextId;
     const headers = { authorization: `Bearer ${this.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-protocol-version': PROTOCOL };
     if (this.session) headers['mcp-session-id'] = this.session;
     let response;
-    this.requestAbort = new AbortController();
-    try { response = await this.fetch(this.url, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(55000),this.requestAbort.signal]), body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }) }); }
+    try { response = await this.fetch(this.url, { method: 'POST', headers, redirect: 'error', signal, body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }) }); }
     catch { this.closed = true; throw new Error('MCP transport failed'); }
     if (response.status === 409) { this.closed = true; throw new Error('connection_replaced'); }
     if (!response.ok) { this.closed = true; throw new Error('MCP request refused'); }
@@ -49,6 +63,7 @@ export class RulithMcp {
               const data = event.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
               if (!data) continue;
               const item = JSON.parse(data);
+              if (item.method === 'notifications/progress' && params?._meta?.progressToken !== undefined && item.params?.progressToken === params._meta.progressToken) extend();
               if (item.id === id) { message = item; break; }
               if (item.method === 'notifications/connection_replaced' || item.params?.reason === 'connection_replaced') { this.closed = true; throw new Error('connection_replaced'); }
             }
@@ -119,18 +134,19 @@ function ipcBridge() {
   let id = 0; const pending = new Map();
   const receive = message => {
     if (message?.protocol !== 'rulith-dsh-rpc' || !pending.has(message.id)) return;
-    const waiter = pending.get(message.id); pending.delete(message.id); clearTimeout(waiter.timer);
+    const waiter = pending.get(message.id); pending.delete(message.id);
     if (message.error) waiter.reject(new Error(message.error)); else waiter.resolve(message.result);
   };
-  process.on('message', receive);
+  const disconnected = () => { for (const p of pending.values()) p.reject(new Error('MCP connection closed')); pending.clear(); };
+  process.on('message', receive); process.on('disconnect', disconnected);
   const rpc = (method, args) => new Promise((resolve, reject) => {
     const key = ++id;
-    const timer = setTimeout(() => { pending.delete(key); reject(new Error('MCP transport failed')); }, 58000);
-    pending.set(key, { resolve, reject, timer });
+    // The parent owns the transport clock; a second IPC timer would cut off its live call.
+    pending.set(key, { resolve, reject });
     process.send({ protocol: 'rulith-dsh-rpc', id: key, method, args });
   });
   return {
     initialize: () => rpc('identity', {}), list: () => rpc('list', {}), call: (name,args) => rpc('call', { name,args }),
-    close() { process.off('message', receive); for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error('MCP connection closed')); } pending.clear(); },
+    close() { process.off('message', receive); process.off('disconnect', disconnected); disconnected(); },
   };
 }

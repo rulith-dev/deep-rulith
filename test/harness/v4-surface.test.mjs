@@ -36,24 +36,13 @@ test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_i
   assert.match(persona, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with EndGoal and a reason\./);
 });
 
-test('the G2 templates are valid ApplyBatch operations whose rule derives the declared outcome', () => {
+test('goal guidance declares an outcome without a generic test-to-completion rule', () => {
   const examples = [...ADDENDUM.matchAll(/for example (\{.*?\})\. /g)].map((match) => JSON.parse(match[1]));
-  assert.equal(examples.length, 2);
-  const [declare, rule] = examples;
-  assert.deepEqual(Object.keys(declare).sort(), ['desired', 'label', 'op']);
-  assert.equal(declare.op, 'declare_goal');
-  assert.equal(rule.op, 'add_axiom');
-  assert.deepEqual(rule.then, declare.desired);
-  // The rule rests on the pinned test receipt (a Tool fact) and waits for the ledger to have no open hypothesis.
-  const receipt = rule.when.find((atom) => atom.predicate === 'eng.test_result');
-  assert.deepEqual(Object.keys(receipt.args).sort(), ['exit_code', 'gen', 'spec_digest', 'tree_digest']);
-  assert.equal(receipt.args.exit_code, 0);
-  assert.deepEqual(rule.when.find((atom) => atom.predicate === 'research.ledger.goal_open'), { predicate: 'research.ledger.goal_open', args: { goal: '<goal ID>' }, naf: true });
-  for (const atom of [...rule.when, ...rule.then, ...declare.desired]) assert.deepEqual(Object.keys(atom).filter((key) => !['predicate', 'args', 'naf'].includes(key)), []);
-  // The receipt's arguments are the ones the engineering Capability records.
-  const manifest = JSON.parse(read('engineering-work/worker-tools.json'));
-  const returned = Object.values(manifest.tools).flatMap((tool) => tool.returns).find((mapping) => mapping.predicate === 'eng.test_result');
-  assert.ok(returned, 'eng.test_result is a Worker result');
+  assert.equal(examples.length, 1);
+  assert.equal(examples[0].op, 'declare_goal');
+  assert.deepEqual(Object.keys(examples[0]).sort(), ['desired', 'label', 'op']);
+  assert.doesNotMatch(ADDENDUM, /"op":"add_axiom"/);
+  assert.match(ADDENDUM, /user's actual acceptance criteria/);
 });
 
 test('every research.ledger word the instructions name matches the 0.4.0 package', () => {

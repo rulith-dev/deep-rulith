@@ -45,6 +45,38 @@ test('HTTP SSE matching response preserves operations and consumes notifications
   }});
   const result=await client.call('QueryBoard',{}); assert.deepEqual(result.operations,[{state:'running'}]);
 });
+test('only progress for this call extends its silence deadline, within the host ceiling', async () => {
+  const run = async (matching, answerAt, ceilingMs) => {
+    let calls = 0;
+    const client = new RulithMcp({ url: 'https://example.invalid/mcp', token: 'secret', timeoutMs: 120, ceilingMs,
+      fetchImpl: async (_url, options) => {
+        calls++;
+        const request = JSON.parse(options.body);
+        let interval; let answer;
+        const body = new ReadableStream({
+          start(controller) {
+            const send = (value) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`));
+            interval = setInterval(() => send({ jsonrpc: '2.0', method: 'notifications/progress', params: {
+              progressToken: matching ? request.params._meta.progressToken : 'someone-else' } }), 30);
+            answer = setTimeout(() => { clearInterval(interval); send({ jsonrpc: '2.0', id: request.id, result: { content: [] } }); controller.close(); }, answerAt);
+            options.signal.addEventListener('abort', () => { clearInterval(interval); clearTimeout(answer); controller.error(new Error('aborted')); }, { once: true });
+          },
+          cancel() { clearInterval(interval); clearTimeout(answer); },
+        });
+        return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+      } });
+    try {
+      const call = client.call('ApplyAction', {});
+      if (matching && answerAt < ceilingMs) assert.deepEqual(await call, { content: [] });
+      else { await assert.rejects(call, /MCP response unreadable/); await assert.rejects(client.call('QueryBoard', {}), /closed/); }
+      assert.equal(calls, 1, 'the accepted write is never retried');
+    } finally { client.close(); }
+  };
+  await run(true, 260, 600);
+  await run(false, 260, 600);
+  await run(true, 600, 240);
+});
+
 test('gate restricts inherited globals through agent context before work',async()=>{
   const calls=[]; const scoped={tools:{restrict:filter=>{calls.push(filter);return ()=>{};}}};
   restrictAgent({ctx:scoped}); assert.deepEqual(calls[0].allow,[...TOOLS]);
