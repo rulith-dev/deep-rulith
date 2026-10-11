@@ -34,9 +34,9 @@ export function selectedAgent(home, agentName) {
 
 const UNRESOLVED = new Set(['running', 'waiting_for_decision', 'needs_person']);
 const parsed = (result) => { try { return JSON.parse((result.content ?? []).map((part) => part.text ?? '').join('')); } catch { return null; } };
-/** This call's own unresolved entry on a strip: the one entry of its tool that is still open (the execution slot holds one). */
-const openEntryOf = (strip, tool) => {
-  const open = (Array.isArray(strip) ? strip : []).filter((e) => e && e.tool === tool && UNRESOLVED.has(e.state));
+/** This call's own unresolved entry on a strip: the one entry of its tool and seat that is still open (each seat holds one). */
+const openEntryOf = (strip, tool, seat) => {
+  const open = (Array.isArray(strip) ? strip : []).filter((e) => e && e.tool === tool && (e.seat ?? 'main') === seat && UNRESOLVED.has(e.state));
   return open.length === 1 ? open[0] : undefined;
 };
 /**
@@ -45,9 +45,9 @@ const openEntryOf = (strip, tool) => {
  * own entry settles, then answer with that read: it carries the outcome in full the first time it is shown. Waiting
  * for a person's decision is not waited on. The wait ends at RULITH_DSH_WAIT_SECONDS if set (0 or unset: until settled).
  */
-export async function awaitOutcome(bridge, tool, result, { pollMs = 2_000, waitSeconds = Number(process.env.RULITH_DSH_WAIT_SECONDS || 0) } = {}) {
+export async function awaitOutcome(bridge, tool, result, { seat = bridge.seat ?? 'main', pollMs = 2_000, waitSeconds = Number(process.env.RULITH_DSH_WAIT_SECONDS || 0) } = {}) {
   const first = parsed(result);
-  const own = openEntryOf(first?.operations, tool);
+  const own = openEntryOf(first?.operations, tool, seat);
   if (!own || own.state !== 'running') return result;
   const deadline = waitSeconds > 0 ? Date.now() + waitSeconds * 1000 : Infinity;
   let last = result;
@@ -57,7 +57,7 @@ export async function awaitOutcome(bridge, tool, result, { pollMs = 2_000, waitS
     if (look.isError) return last;
     last = look;
     const strip = parsed(look)?.operations;
-    const entry = (Array.isArray(strip) ? strip : []).find((e) => e && e.tool === own.tool && e.label === own.label && e.at === own.at);
+    const entry = (Array.isArray(strip) ? strip : []).find((e) => e && e.tool === own.tool && (e.seat ?? 'main') === seat && e.label === own.label && e.at === own.at);
     if (!entry || entry.state !== 'running') return look;
   }
   return last;
@@ -172,7 +172,7 @@ export async function apply(ctx, config = {}) {
         const call = (name, input) => invoke(name, input, seat);
         const result = await call(tool.name, args);
         if (result.isError) throw new Error(JSON.stringify(result));
-        return awaitOutcome({ call }, tool.name, result);
+        return awaitOutcome({ call }, tool.name, result, { seat });
       },
     }));
     current = { token: agent.token, agentName: agent.agentName, bridge, seats: new Map(), disposers };

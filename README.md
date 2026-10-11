@@ -26,7 +26,7 @@ It is also a worked example of a third-party agent harness using Rulith.
 | `engineering-work/` | Worker adapters for programming work on one project directory (`eng.read`, `eng.write_file`, `eng.patch_file`, `eng.run`, `eng.test`, jobs, …) and the Capability that accredits their results. |
 | `test/` | Node tests. |
 
-Deep Rulith adds nothing to the Rulith Runtime; it uses the `rulith` package (0.12.0 or later),
+Deep Rulith adds nothing to the Rulith Runtime; it uses the `rulith` package (0.13.0 or later),
 installed by `npm install` in this repository.
 
 ## What leaves your computer
@@ -64,7 +64,7 @@ Requires the Node.js version dsh requires.
 RULITH_RUNTIME_DIR=<rulith-runtime checkout> npm test
 ```
 
-Without `RULITH_RUNTIME_DIR` the tests use the installed `rulith` package.
+Without `RULITH_RUNTIME_DIR` the tests use the installed `rulith` package. Set `DSH_BASE_FILE` to the installed `@deepseek-ai/dsh-base/cordis.patch.yml` (or `DSH_REFERENCE_DIR` to its source checkout) to run the tool-disable check as well. The launcher refreshes its shipped browser plugin on every start; upgrading does not require recreating your profile.
 
 ## License
 

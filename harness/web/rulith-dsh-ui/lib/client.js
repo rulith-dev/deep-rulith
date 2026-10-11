@@ -159,6 +159,8 @@ window.__ModuleLoader__.load({
       const [worker, refreshWorker] = usePoll("worker", 6000);
       const [health, refreshHealth] = usePoll("health", 60000);
       const [trace, setTrace] = useState(true);
+      const [folder, setFolder] = useState("");
+      const [folderNote, setFolderNote] = useState("");
       const reload = () => { refresh(); refreshWorker(); refreshHealth(); };
       if (!data) return h("div", { style: { padding: 12 } }, "正在读取 Rulith…");
       if (!data.ok) return h("div", { style: { padding: 12, color: AMBER } }, data.teaching || "读不到 Rulith");
@@ -190,8 +192,6 @@ window.__ModuleLoader__.load({
         : none("没有进行中的目标。");
 
       const needs = health && health.ok && health.available && Array.isArray(health.items) ? health.items : [];
-      const [folder, setFolder] = useState("");
-      const [folderNote, setFolderNote] = useState("");
       const proposeFolder = async (source) => {
         setFolderNote("");
         try {

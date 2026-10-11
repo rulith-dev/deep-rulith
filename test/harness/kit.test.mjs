@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RulithMcp, PROTOCOL, TOOLS, apply as applyBridge } from '../../harness/rulith-mcp.mjs';
 import { restrictAgent, apply as applyGate, ADDENDUM } from '../../harness/rulith-gate.mjs';
 import { parseArgs, dshArgv, Budget, CAPS, startRole } from '../../harness/rulith-dsh-role.mjs';
+import { awaitOutcome } from '../../harness/web/rulith-runtime.mjs';
 import { sleep } from '../../engineering-work/lib.mjs';
 
 const scratch=fileURLToPath(new URL('../../.scratch/',import.meta.url)); fs.mkdirSync(scratch,{recursive:true});
@@ -75,6 +77,46 @@ test('only progress for this call extends its silence deadline, within the host 
   await run(true, 260, 600);
   await run(false, 260, 600);
   await run(true, 600, 240);
+});
+
+test('a normal launch refreshes the shipped browser plugin without recreating the profile', t => {
+  const dir = fs.mkdtempSync(path.join(scratch, 'launcher-upgrade-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const home = path.join(dir, 'dsh-home');
+  const profile = path.join(home, 'profiles', 'rulith');
+  const client = path.join(profile, 'node_modules', 'rulith-dsh-ui', 'lib', 'client.js');
+  fs.mkdirSync(path.dirname(client), { recursive: true });
+  fs.writeFileSync(client, 'old Case UI');
+  const own = path.join(profile, 'owner-settings.json'); fs.writeFileSync(own, 'owner choice');
+  const bin = path.join(dir, 'dsh.cjs');
+  fs.writeFileSync(bin, 'require("node:fs").writeFileSync("launched.json",JSON.stringify(process.argv.slice(2)))');
+  const settings = path.join(dir, 'settings.json');
+  fs.writeFileSync(settings, JSON.stringify({ dshBin: bin, dshHome: home, cwd: dir, managerHome: dir, keyFile: path.join(dir, 'key'), runtimeEntry: 'unused', persona: 'unused' }));
+  execFileSync(process.execPath, [fileURLToPath(new URL('../../harness/web/start-deep-rulith.mjs', import.meta.url)), settings, '--no-open'], { stdio: 'pipe' });
+  assert.equal(fs.readFileSync(client, 'utf8'), fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'));
+  assert.equal(fs.readFileSync(own, 'utf8'), 'owner choice');
+  const argv = JSON.parse(fs.readFileSync(path.join(dir, 'launched.json')));
+  assert.ok(argv.includes('--no-open'));
+  assert.ok(!argv.includes('--from-default-profile'));
+});
+
+test('held outcomes stay with their calling seat even when other seats run the same tool', async () => {
+  const answer = (operations) => ({ content: [{ type: 'text', text: JSON.stringify({ operations }) }] });
+  const operation = (seat, state) => ({ tool: 'ApplyAction', label: 'ApplyAction test', at: 'same-instant', seat, state });
+  for (const seat of ['main', 'review']) {
+    const other = seat === 'main' ? 'review' : 'main';
+    const initial = answer([operation(other, 'running'), operation(seat, 'running')]);
+    const intermediate = answer([operation(other, 'done'), operation(seat, 'running')]);
+    const done = answer([operation(other, 'running'), operation(seat, 'done')]);
+    let reads = 0;
+    const bridge = { call: async (tool) => { assert.equal(tool, 'QueryBoard'); return ++reads === 1 ? intermediate : done; } };
+    assert.equal(await awaitOutcome(bridge, 'ApplyAction', initial, { seat, pollMs: 1 }), done);
+    assert.equal(reads, 2);
+  }
+  const initial = answer([{ tool: 'ApplyAction', label: 'legacy-main', at: 'one', state: 'running' }]);
+  const done = answer([{ tool: 'ApplyAction', label: 'legacy-main', at: 'one', state: 'done' }]);
+  assert.equal(await awaitOutcome({ call: async () => done }, 'ApplyAction', initial, { pollMs: 1 }), done);
+  assert.equal(await awaitOutcome({ call: async () => { throw new Error('must not poll another seat'); } }, 'ApplyAction', initial, { seat: 'review', pollMs: 1 }), initial);
 });
 
 test('gate restricts inherited globals through agent context before work',async()=>{
@@ -162,9 +204,9 @@ test('IPC stop terminates active dsh and reload drains the current task',async t
   await role.control({protocol:'rulith-local-control',operation:'reload'});assert.equal(role.server.listening,true);
   await role.control({protocol:'rulith-local-control',operation:'stop'}); await running; assert.equal(role.server.listening,false);
 });
-test('overlay disabled ids exist in pinned dsh base sources; runner depends on gate',{skip:!process.env.DSH_REFERENCE_DIR&&'set DSH_REFERENCE_DIR to a deepseek-harness checkout'},()=>{
+test('overlay disabled ids exist in pinned dsh base sources; runner depends on gate',{skip:!process.env.DSH_REFERENCE_DIR&&!process.env.DSH_BASE_FILE&&'set DSH_REFERENCE_DIR or DSH_BASE_FILE to the pinned dsh base'},()=>{
   const source=process.env.DSH_REFERENCE_DIR;
-  const base=fs.readFileSync(path.join(source,'packages/bundle/base/cordis.patch.yml'),'utf8');
+  const base=fs.readFileSync(process.env.DSH_BASE_FILE ?? path.join(source,'packages/bundle/base/cordis.patch.yml'),'utf8');
   const overlay=fs.readFileSync(new URL('../../harness/rulith.cordis.yml',import.meta.url),'utf8');
   const ids=[...overlay.matchAll(/^- id: ([^\r\n]+)\r?\n  disabled: true/gm)].map(m=>m[1]); assert.ok(ids.length>50);
   for(const id of ids) assert.match(base,new RegExp(`^    - id: ${id}$`,'m'),id);

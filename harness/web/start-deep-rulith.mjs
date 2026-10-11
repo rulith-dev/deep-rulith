@@ -95,17 +95,20 @@ if (seats.length > 0) {
 const seatArgs = seats.length > 0 ? ['--patch', seatsPatch] : [];
 
 // --init creates the profile once from dsh's shipped web template (launcher flags must precede app flags such as --port),
-// then puts the browser plugin into the profile's node_modules (a copy; no links).
+// Every launch refreshes the product's browser plugin (a copy; no links), so upgrades do not keep the old UI.
 const init = process.argv[3] === '--init';
-if (!init) writeModelRoute();
+const syncBrowserPlugin = () => {
+  const target = path.join(s.dshHome, 'profiles', profile, 'node_modules', 'rulith-dsh-ui');
+  fs.cpSync(fileURLToPath(new URL('./rulith-dsh-ui', import.meta.url)), target, { recursive: true });
+};
+if (!init) { syncBrowserPlugin(); writeModelRoute(); }
 const args = init
   ? [s.dshBin, '--profile', profile, '--from-default-profile', 'web', '--patch', overlay, ...seatArgs, '--dump-config']
   : [s.dshBin, '--profile', profile, '--patch', overlay, ...seatArgs, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...process.argv.slice(3)];
 const child = spawn(process.execPath, args, { cwd: s.cwd, env, stdio: init ? ['ignore', 'ignore', 'inherit'] : 'inherit' });
 child.on('exit', (code) => {
   if (init && code === 0) {
-    const target = path.join(s.dshHome, 'profiles', profile, 'node_modules', 'rulith-dsh-ui');
-    fs.cpSync(fileURLToPath(new URL('./rulith-dsh-ui', import.meta.url)), target, { recursive: true });
+    syncBrowserPlugin();
     writeModelRoute();
     console.log(`Deep Rulith profile "${profile}" created in ${s.dshHome}.`);
   }
