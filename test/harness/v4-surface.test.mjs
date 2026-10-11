@@ -8,7 +8,7 @@ const read = (file) => fs.readFileSync(new URL(`../../${file}`, import.meta.url)
 
 test('the bridge speaks rulith/v4 with exactly the five tools', () => {
   assert.equal(NAMESPACE, 'rulith/v4');
-  assert.deepEqual([...TOOLS], ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact', 'EndGoal']);
+  assert.deepEqual([...TOOLS], ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact']);
   const listed = (names) => ({ tools: names.map((name) => ({ name })) });
   assert.equal(surfaceAccepted(listed(TOOLS)), true);
   assert.equal(surfaceAccepted(listed(['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase', 'QueryBoard', 'ReadArtifact'])), false);
@@ -33,7 +33,7 @@ test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_i
   // The completion guidance of v3 (a goal leaf plus a rule deriving completion) is gone; the Board completes goals.
   assert.doesNotMatch(ADDENDUM, /goal leaf|goal_node|subgoal_of/);
   assert.match(ADDENDUM, /The Board completes the goal by itself only when it certifies that outcome from the evidence\./);
-  assert.match(persona, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with EndGoal and a reason\./);
+  assert.match(persona, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason\./);
 });
 
 test('goal guidance declares an outcome without a generic test-to-completion rule', () => {

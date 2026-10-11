@@ -2,10 +2,10 @@
 export const PROTOCOL = '2025-11-25';
 // rulith/v4（A 包，D-1008i）：恰好这五个工具；OpenCase、CloseCase 已退出，一次切换，不留 v3 路径。
 export const NAMESPACE = 'rulith/v4';
-export const TOOLS = Object.freeze(['QueryBoard','ApplyBatch','ApplyAction','ReadArtifact','EndGoal']);
+export const TOOLS = Object.freeze(['QueryBoard','ApplyBatch','ApplyAction','ReadArtifact']);
 export const name = 'rulith-mcp';
 export const inject = ['tools'];
-/** The v4 surface: exactly the five tools, each once, in one page. */
+/** The v4 surface: exactly the four tools, each once, in one page. */
 export const surfaceAccepted = (listed) => !listed?.nextCursor && Array.isArray(listed?.tools) && listed.tools.length === TOOLS.length
   && new Set(listed.tools.map(t => t.name)).size === TOOLS.length && TOOLS.every(t => listed.tools.some(x => x.name === t));
 export class RulithMcp {

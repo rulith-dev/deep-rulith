@@ -21,13 +21,13 @@ test('MCP pins protocol, serializes calls, strips host metadata, and never retri
     return response({content:[{type:'text',text:'authority'}],_meta:{'rulith/v4':{agentId:'agent',focusedGoals:[]}}},body.id);
   }});
   assert.equal(await client.initialize(),'agent');
-  const results=await Promise.all([client.call('QueryBoard',{}),client.call('EndGoal',{})]);
+  const results=await Promise.all([client.call('QueryBoard',{}),client.call('ApplyBatch',{})]);
   assert.equal(max,1); assert.equal(calls[0].body.params.protocolVersion,PROTOCOL);
   assert.equal(calls[2].headers['mcp-protocol-version'],PROTOCOL); assert.equal(calls[2].headers['mcp-session-id'],'session');
   // QueryBoard is never held, so it carries no progress token; a held tool carries its own.
   assert.equal(calls[2].body.params._meta,undefined); assert.equal(calls[3].body.params._meta.progressToken,`progress_${calls[3].body.id}`);
   assert.ok(results.every(r=>r._meta===undefined));
-  await assert.rejects(client.call('shell',{}),/tool refused/); await assert.rejects(client.call('OpenCase',{}),/tool refused/); assert.equal(calls.length,4);
+  await assert.rejects(client.call('shell',{}),/tool refused/); await assert.rejects(client.call('OpenCase',{}),/tool refused/); await assert.rejects(client.call('EndGoal',{}),/tool refused/); assert.equal(calls.length,4);
 });
 test('connection_replaced permanently closes MCP, including queued calls',async()=>{
   let count=0;
