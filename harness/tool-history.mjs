@@ -27,9 +27,8 @@ export function rewriteToolHistory(session) {
   return rewritten;
 }
 
-export function installToolHistory(ctx) {
-  ctx.on('agent/pre-step', async ({ agent }, next) => {
-    if (agent?.session) rewriteToolHistory(agent.session);
-    return next();
-  });
-}
+// Not installed: dsh refuses a surface replacement of an assistant/message (it embeds its source stream
+// and cannot carry sourceEventSeqs), so this hook failed every turn of a conversation that held an old
+// tool name (2026-10-12). Old names in history now reach the model unchanged until a request-level
+// mapping replaces this.
+export function installToolHistory() {}

@@ -69,15 +69,10 @@ test('old calls replay as Get, Set and Execute without rewriting originals or ot
     session.surface.nodes.map((seq) => session.deriveEventMessage(session.eventAt(seq))));
 });
 
-test('the pre-step hook projects restored calls before handing the conversation to the model', async () => {
-  const session = fakeSession([]);
-  session.append('assistant/message', { message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c', name: 'QueryBoard', input: {} }] } });
-  let hook;
-  installToolHistory({ on(type, handler) { assert.equal(type, 'agent/pre-step'); hook = handler; } });
-  assert.equal(await hook({ agent: { session } }, () => {
-    assert.equal(session.deriveEventMessage(session.eventAt(session.surface.nodes[0])).content[0].name, 'Get');
-    return 'continued';
-  }), 'continued');
+test('no pre-step history rewrite is installed: dsh refuses replacing an assistant/message', () => {
+  let registered = false;
+  installToolHistory({ on() { registered = true; } });
+  assert.equal(registered, false);
 });
 
 test('a historical accepted ApplyBatch resets the Set reminder when replayed', () => {
