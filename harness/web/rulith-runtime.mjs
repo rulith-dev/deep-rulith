@@ -12,6 +12,7 @@ import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installToolHistory } from '../tool-history.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installThinkingHistory } from './thinking-history.mjs';
+import { installProjectContext, readSourceBindings, resolveProject } from './project-source.mjs';
 import { ShadowReviewer, ShadowTriggers, decodeBoardResult, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 export const name = 'rulith-runtime';
@@ -354,19 +355,32 @@ export async function apply(ctx, config = {}) {
     if (sourcesCache?.instanceId === instanceId && Date.now() - sourcesCache.at < 60_000) return sourcesCache.rows;
     const row = (readJson(path.join(home, 'registry.json'))?.instances ?? []).find((entry) => entry.id === instanceId);
     const env = row ? readJson(path.join(row.directory, 'local.json'))?.worker?.env ?? {} : {};
-    if (!env.RULITH_WORK_URL || !env.RULITH_CONNECTION || !env.RULITH_CONNECTION_KEY) return [];
-    const response = await fetch(`${env.RULITH_WORK_URL}/sources`, { signal: AbortSignal.timeout(10_000),
-      headers: { 'x-rulith-connection': env.RULITH_CONNECTION, 'x-rulith-connection-key': env.RULITH_CONNECTION_KEY } });
-    if (!response.ok) return sourcesCache?.rows ?? [];
-    const rows = ((await response.json()).sources ?? []).filter((source) => typeof source?.name === 'string')
-      .map((source) => ({ name: source.name, type: String(source.type ?? ''), location: String(source.access ?? '') }));
+    const rows = await readSourceBindings(env);
     sourcesCache = { instanceId, at: Date.now(), rows };
     return rows;
+  };
+  const conversationSources = async () => {
+    const agent = selectedAgent(home, chosenName());
+    if (!agent) throw new Error('No selected Agent');
+    return boundSources(agent.instanceId);
+  };
+  installProjectContext(ctx, conversationSources);
+  const project = async ({ workspace }) => {
+    try {
+      const sources = await conversationSources();
+      return { workspace, project: resolveProject(workspace, sources) };
+    } catch {
+      console.error('[rulith project] Sources cannot be read; panel project unavailable');
+      return { workspace, unavailable: true };
+    }
   };
   const workerTrace = async () => {
     const agent = selectedAgent(home, chosenName());
     if (!agent) return { available: false };
-    const sources = await boundSources(agent.instanceId).catch(() => []);
+    const sources = await boundSources(agent.instanceId).catch(() => {
+      console.error('[rulith project] Sources cannot be read; Worker bindings unavailable');
+      return [];
+    });
     if (traceLink?.instanceId !== agent.instanceId)
       traceLink = { instanceId: agent.instanceId, url: new URL((await manager('/manager/instances/open', { instanceId: agent.instanceId, page: '/' })).url) };
     const abort = new AbortController();
@@ -434,6 +448,7 @@ export async function apply(ctx, config = {}) {
     'GET /rulith/api/health': health,
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
     'GET /rulith/api/worker': workerTrace,
+    'GET /rulith/api/project': project,
     'POST /rulith/api/signin': async () => {
       const reply = await manager('/manager/device/start', { consoleUrl, name: os.hostname() });
       return { url: reply.device?.consoleUrl ?? '' };
@@ -476,7 +491,8 @@ export async function apply(ctx, config = {}) {
       if (req.headers['x-deep-rulith'] !== '1' || !loopbackHost) return send(res, 403, { ok: false, teaching: 'Same-origin Deep Rulith requests only.' });
       const route = routes[`${req.method} ${(req.url ?? '').split('?')[0]}`];
       if (!route) return send(res, 404, { ok: false, teaching: 'No such Deep Rulith route.' });
-      try { send(res, 200, { ok: true, ...(await route(req.method === 'POST' ? await readBody(req) : {})) }); }
+      try { send(res, 200, { ok: true, ...(await route(req.method === 'POST' ? await readBody(req)
+        : { workspace: new URL(req.url, 'http://127.0.0.1').searchParams.get('workspace') })) }); }
       catch (error) { send(res, 200, { ok: false, teaching: String(error?.message ?? error).slice(0, 400) }); }
     },
   }));

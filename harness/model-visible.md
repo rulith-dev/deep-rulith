@@ -1,5 +1,26 @@
 # Model-visible strings
 
+## Conversation project (2026-10-12)
+
+The web host's `agent/pre-step` context (`web/project-source.mjs`) resolves the conversation's `session.header.cwd`
+against the selected Agent's approved file Sources. It reuses the panel's Worker `/work/sources` read and its existing
+Connection credentials; no new credential or privileged channel is added. The deepest containing directory wins,
+with separator normalization, Windows case folding and a directory boundary check. This is project context, not Board
+state, a goal, or a new grant. The approved persona file and gate addendum are unchanged.
+
+One harness-owned context message is retained on the model surface and reused across steps and turns; a changed project
+replaces that message. Older copies are emptied through dsh surface replacements, keeping originals in the person's
+log. Compaction can remove it; the next step restores it. Exactly one of these lines appears in the current context:
+
+```text
+This conversation's project is Source "<name>" (<directory>). Use source "<name>" for project files unless the user names another approved project.
+This workspace (<directory>) is not an approved Rulith project; project file Actions cannot reach it until a person adds it in Console.
+```
+
+Unreadable Sources (including a missing selected Agent) or an unavailable conversation cwd clear the project's context
+instead of claiming the workspace is unapproved, and log a visible `[rulith project]` diagnostic. Approved Source reads
+are cached for 60 seconds per local instance; failures do not reuse an expired or another instance's list.
+
 ## Shadow reviewer pilot (2026-10-12)
 
 The shadow sees exactly this system prompt (`web/shadow-reviewer.mjs`, `SHADOW_SYSTEM`), separate from the main persona:

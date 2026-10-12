@@ -154,14 +154,16 @@ window.__ModuleLoader__.load({
 
     // The right column is this environment's execution, as the Rulith Runtime shows it beside a conversation:
     // goals, recent operations, the current frontier, and the local Worker's activity.
-    function RulithColumn() {
+    function RulithColumn({ sessionId, useSessions }) {
+      const workspace = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
+      const [project, refreshProject] = usePoll("project?workspace=" + encodeURIComponent(workspace || ""), 6000);
       const [data, refresh] = usePoll("board", 6000);
       const [worker, refreshWorker] = usePoll("worker", 6000);
       const [health, refreshHealth] = usePoll("health", 60000);
       const [trace, setTrace] = useState(true);
       const [folder, setFolder] = useState("");
       const [folderNote, setFolderNote] = useState("");
-      const reload = () => { refresh(); refreshWorker(); refreshHealth(); };
+      const reload = () => { refresh(); refreshWorker(); refreshHealth(); refreshProject(); };
       if (!data) return h("div", { style: { padding: 12 } }, "正在读取 Rulith…");
       if (!data.ok) return h("div", { style: { padding: 12, color: AMBER } }, data.teaching || "读不到 Rulith");
       if (!data.available) return h("div", { style: { padding: 12 } }, "还没有接入 Rulith：请在左下角登录并选择 Agent。");
@@ -242,7 +244,7 @@ window.__ModuleLoader__.load({
         block("目标", directory.length ? String(board.goals.total || directory.length) + " 个" : "", goalRows),
         block("最近操作", "", opRows),
         block("当前前沿", "", frontierRows),
-        block("本机执行（Worker）", "", workerBody));
+        block("本机执行（Worker）", project && project.workspace === workspace && project.project ? project.project.name : "", workerBody));
     }
 
     const RulithArtwork = () => h("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
