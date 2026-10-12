@@ -47,7 +47,7 @@ In the settings file, `"shadow":{"enabled":false}` switches the pilot off on res
 of the main request is reused. Override `shadow.provider` and/or `shadow.model` with a configured dsh route, or set
 `shadow.modelHome` to a separate Rulith manager home containing the same `model-defaults.json` format the launcher uses
 for the main model. This opens route `rulith-shadow`; its key travels only in the child environment. `shadow.maxTokens`
-(default 400) and `shadow.timeoutMs` (default 120000) bound output and model-call time. No input truncation is added.
+(default 8000, room for the model's thinking) and `shadow.timeoutMs` (default 120000) bound output and model-call time. No input truncation is added.
 
 Local measurements are in `$DSH_HOME/logs/shadow-reviews.jsonl` (manager home fallback). One row is appended per review:
 reviewId, time, triggerTool, boardFingerprintSize, deltaSize, provider/model, input/output/cache tokens when returned,
