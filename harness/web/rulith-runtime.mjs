@@ -225,7 +225,7 @@ export async function apply(ctx, config = {}) {
           focusedGoals: [...(mainBridge?.focusedGoals ?? [])],
           route: { provider: shadowSettings.provider ?? mainRoute.provider ?? 'rulith-model',
             model: shadowSettings.model ?? mainRoute.model ?? process.env.RULITH_DSH_MODEL,
-            maxTokens: shadowSettings.maxTokens ?? 400 }, timeoutMs: shadowSettings.timeoutMs ?? 120_000 });
+            maxTokens: shadowSettings.maxTokens ?? 8000 }, timeoutMs: shadowSettings.timeoutMs ?? 120_000 });
         if (outcome.isError) throw new Error(JSON.stringify(outcome));
         return outcome;
       },

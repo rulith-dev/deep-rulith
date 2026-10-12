@@ -35,7 +35,7 @@ const env = {
   RULITH_MODEL_KEY: model?.key ?? '',
   RULITH_DSH_SHADOW: JSON.stringify({ enabled: shadow.enabled !== false,
     provider: shadow.provider ?? (shadowModel ? 'rulith-shadow' : undefined), model: shadow.model ?? shadowModel?.name,
-    maxTokens: shadow.maxTokens ?? 400, timeoutMs: shadow.timeoutMs ?? 120_000 }),
+    maxTokens: shadow.maxTokens ?? 8000, timeoutMs: shadow.timeoutMs ?? 120_000 }),
   RULITH_SHADOW_MODEL_KEY: shadowModel?.key ?? '',
 };
 if (!model) console.error('Deep Rulith: no model is set in Rulith yet; set it under 更多设置 (Rulith workbench) and restart.');
