@@ -1,4 +1,4 @@
-// Rulith edition of dsh: every agent sees only Rulith's five tools and the approved Runtime persona plus addendum.
+// Rulith edition of dsh: every agent sees only Rulith's three tools and the approved Runtime persona plus addendum.
 import fs from 'node:fs';
 import { TOOLS } from '../rulith-mcp.mjs';
 import { ADDENDUM } from '../rulith-gate.mjs';

@@ -6,14 +6,15 @@ import { ADDENDUM } from '../../harness/rulith-gate.mjs';
 
 const read = (file) => fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
 
-test('the bridge speaks rulith/v4 with exactly the five tools', () => {
+test('the bridge speaks rulith/v4 with exactly the three tools', () => {
   assert.equal(NAMESPACE, 'rulith/v4');
-  assert.deepEqual([...TOOLS], ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact']);
+  assert.deepEqual([...TOOLS], ['Get', 'Set', 'Execute']);
   const listed = (names) => ({ tools: names.map((name) => ({ name })) });
   assert.equal(surfaceAccepted(listed(TOOLS)), true);
-  assert.equal(surfaceAccepted(listed(['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase', 'QueryBoard', 'ReadArtifact'])), false);
+  assert.equal(surfaceAccepted(listed(['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact'])), false);
+  assert.equal(surfaceAccepted(listed([...TOOLS, 'ReadArtifact'])), false);
   assert.equal(surfaceAccepted(listed([...TOOLS, 'OpenCase'])), false);
-  assert.equal(surfaceAccepted(listed(['QueryBoard', 'QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact'])), false);
+  assert.equal(surfaceAccepted(listed(['Get', 'Get', 'Set'])), false);
   assert.equal(surfaceAccepted({ ...listed(TOOLS), nextCursor: 'more' }), false);
 });
 
@@ -28,8 +29,11 @@ test('a Gateway that reports its identity only under rulith/v3 is refused at ini
 
 test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_id', () => {
   const persona = read('harness/runtime-persona.txt');
+  assert.match(ADDENDUM, /^Your only tools are Rulith's three\./);
+  assert.match(persona, /Inside Set, assert_fact/);
+  assert.match(persona, /call Get when you need a current view\./);
   for (const text of [persona, ADDENDUM])
-    assert.doesNotMatch(text, /\bCases?\b|OpenCase|CloseCase|case_id|case_open|case_datum|rulith\.exploration\.completed|taskStatus shows the root/);
+    assert.doesNotMatch(text, /\bCases?\b|OpenCase|CloseCase|case_id|case_open|case_datum|rulith\.exploration\.completed|taskStatus shows the root|QueryBoard|ApplyBatch|ApplyAction|ReadArtifact/);
   // The completion guidance of v3 (a goal leaf plus a rule deriving completion) is gone; the Board completes goals.
   assert.doesNotMatch(ADDENDUM, /goal leaf|goal_node|subgoal_of/);
   assert.match(ADDENDUM, /The Board completes the goal by itself only when it certifies that outcome from the evidence\./);

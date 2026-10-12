@@ -144,8 +144,8 @@ window.__ModuleLoader__.load({
       h("div", { style: { ...section, display: "flex", justifyContent: "space-between" } }, h("span", null, title), extra ? h("span", { style: { textTransform: "none" } }, extra) : null), body);
     const none = (text) => h("div", { style: { opacity: 0.6, fontSize: 12 } }, text);
     const OPERATION_WORDS = { running: "进行中", done: "已确认", failed: "失败", refused: "被拒绝", unknown: "结果未知" };
-    // "ApplyAction worker_<connection>_eng_read_1" reads as "eng.read"; built-in Source tools lose their id suffix.
-    const shortLabel = (label) => String(label || "").replace(/^ApplyAction\s+/, "").replace(/^worker_[a-z0-9]+_/, "").replace(/_\d+$/, "")
+    // "Execute worker_<connection>_eng_read_1" reads as "eng.read"; built-in Source tools lose their id suffix.
+    const shortLabel = (label) => String(label || "").replace(/^Execute\s+/, "").replace(/^worker_[a-z0-9]+_/, "").replace(/_\d+$/, "")
       .replace(/_[0-9a-f]{12}$/, "").replace(/^eng_/, "eng.");
     const STAGE_WORDS = { at_worker: "在本机执行", held: "等待决定", dispatched: "已派发" };
     // rulith/v4（A 包）的目标目录：每行 {goal, label, status, type?, deadline?, awaiting?, seat?}。

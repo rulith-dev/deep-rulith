@@ -21,19 +21,23 @@ test('MCP pins protocol, serializes calls, strips host metadata, and never retri
     return response({content:[{type:'text',text:'authority'}],_meta:{'rulith/v4':{agentId:'agent',focusedGoals:[]}}},body.id);
   }});
   assert.equal(await client.initialize(),'agent');
-  const results=await Promise.all([client.call('QueryBoard',{}),client.call('ApplyBatch',{})]);
+  const artifact = { artifact: { ref: 'supplied-ref', offset: 0 } };
+  const results=await Promise.all([client.call('Get',{}),client.call('Set',{}),client.call('Get',artifact)]);
   assert.equal(max,1); assert.equal(calls[0].body.params.protocolVersion,PROTOCOL);
   assert.equal(calls[2].headers['mcp-protocol-version'],PROTOCOL); assert.equal(calls[2].headers['mcp-session-id'],'session');
-  // QueryBoard is never held, so it carries no progress token; a held tool carries its own.
+  // A Board Get carries no progress token; Set and Artifact Get may be held and carry their own.
   assert.equal(calls[2].body.params._meta,undefined); assert.equal(calls[3].body.params._meta.progressToken,`progress_${calls[3].body.id}`);
+  assert.equal(calls[4].body.params.name, 'Get'); assert.deepEqual(calls[4].body.params.arguments, artifact);
+  assert.equal(calls[4].body.params._meta.progressToken, `progress_${calls[4].body.id}`);
   assert.ok(results.every(r=>r._meta===undefined));
-  await assert.rejects(client.call('shell',{}),/tool refused/); await assert.rejects(client.call('OpenCase',{}),/tool refused/); await assert.rejects(client.call('EndGoal',{}),/tool refused/); assert.equal(calls.length,4);
+  for (const retired of ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact']) await assert.rejects(client.call(retired, {}), /tool refused/);
+  await assert.rejects(client.call('shell',{}),/tool refused/); await assert.rejects(client.call('OpenCase',{}),/tool refused/); await assert.rejects(client.call('EndGoal',{}),/tool refused/); assert.equal(calls.length,5);
 });
 test('connection_replaced permanently closes MCP, including queued calls',async()=>{
   let count=0;
   const client=new RulithMcp({url:'https://example.invalid/mcp',token:'do-not-log',fetchImpl:async()=>{count++;return new Response('{"reason":"connection_replaced"}',{status:409});}});
   await assert.rejects(client.initialize(),/^Error: connection_replaced$/);
-  await assert.rejects(client.call('QueryBoard',{}),/closed/); assert.equal(count,1);
+  await assert.rejects(client.call('Get',{}),/closed/); assert.equal(count,1);
 });
 test('protocol mismatch fails closed without downgrade',async()=>{
   let count=0;
@@ -45,7 +49,7 @@ test('HTTP SSE matching response preserves operations and consumes notifications
     const req=JSON.parse(opt.body);
     return new Response('event: message\ndata: '+JSON.stringify({jsonrpc:'2.0',method:'notifications/progress',params:{}})+'\n\n'+'event: message\ndata: '+JSON.stringify({jsonrpc:'2.0',id:req.id,result:{content:[],operations:[{state:'running'}]}})+'\n\n',{headers:{'content-type':'text/event-stream'}});
   }});
-  const result=await client.call('QueryBoard',{}); assert.deepEqual(result.operations,[{state:'running'}]);
+  const result=await client.call('Get',{}); assert.deepEqual(result.operations,[{state:'running'}]);
 });
 test('only progress for this call extends its silence deadline, within the host ceiling', async () => {
   const run = async (matching, answerAt, ceilingMs) => {
@@ -68,9 +72,9 @@ test('only progress for this call extends its silence deadline, within the host 
         return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
       } });
     try {
-      const call = client.call('ApplyAction', {});
+      const call = client.call('Execute', {});
       if (matching && answerAt < ceilingMs) assert.deepEqual(await call, { content: [] });
-      else { await assert.rejects(call, /MCP response unreadable/); await assert.rejects(client.call('QueryBoard', {}), /closed/); }
+      else { await assert.rejects(call, /MCP response unreadable/); await assert.rejects(client.call('Get', {}), /closed/); }
       assert.equal(calls, 1, 'the accepted write is never retried');
     } finally { client.close(); }
   };
@@ -102,21 +106,21 @@ test('a normal launch refreshes the shipped browser plugin without recreating th
 
 test('held outcomes stay with their calling seat even when other seats run the same tool', async () => {
   const answer = (operations) => ({ content: [{ type: 'text', text: JSON.stringify({ operations }) }] });
-  const operation = (seat, state) => ({ tool: 'ApplyAction', label: 'ApplyAction test', at: 'same-instant', seat, state });
+  const operation = (seat, state) => ({ tool: 'Execute', label: 'Execute test', at: 'same-instant', seat, state });
   for (const seat of ['main', 'review']) {
     const other = seat === 'main' ? 'review' : 'main';
     const initial = answer([operation(other, 'running'), operation(seat, 'running')]);
     const intermediate = answer([operation(other, 'done'), operation(seat, 'running')]);
     const done = answer([operation(other, 'running'), operation(seat, 'done')]);
     let reads = 0;
-    const bridge = { call: async (tool) => { assert.equal(tool, 'QueryBoard'); return ++reads === 1 ? intermediate : done; } };
-    assert.equal(await awaitOutcome(bridge, 'ApplyAction', initial, { seat, pollMs: 1 }), done);
+    const bridge = { call: async (tool) => { assert.equal(tool, 'Get'); return ++reads === 1 ? intermediate : done; } };
+    assert.equal(await awaitOutcome(bridge, 'Execute', initial, { seat, pollMs: 1 }), done);
     assert.equal(reads, 2);
   }
-  const initial = answer([{ tool: 'ApplyAction', label: 'legacy-main', at: 'one', state: 'running' }]);
-  const done = answer([{ tool: 'ApplyAction', label: 'legacy-main', at: 'one', state: 'done' }]);
-  assert.equal(await awaitOutcome({ call: async () => done }, 'ApplyAction', initial, { pollMs: 1 }), done);
-  assert.equal(await awaitOutcome({ call: async () => { throw new Error('must not poll another seat'); } }, 'ApplyAction', initial, { seat: 'review', pollMs: 1 }), initial);
+  const initial = answer([{ tool: 'Execute', label: 'legacy-main', at: 'one', state: 'running' }]);
+  const done = answer([{ tool: 'Execute', label: 'legacy-main', at: 'one', state: 'done' }]);
+  assert.equal(await awaitOutcome({ call: async () => done }, 'Execute', initial, { pollMs: 1 }), done);
+  assert.equal(await awaitOutcome({ call: async () => { throw new Error('must not poll another seat'); } }, 'Execute', initial, { seat: 'review', pollMs: 1 }), initial);
 });
 
 test('gate restricts inherited globals through agent context before work',async()=>{
@@ -124,11 +128,11 @@ test('gate restricts inherited globals through agent context before work',async(
   restrictAgent({ctx:scoped}); assert.deepEqual(calls[0].allow,[...TOOLS]);
   const dir=fs.mkdtempSync(path.join(scratch,'persona-')); const persona=path.join(dir,'persona.txt'); fs.writeFileSync(persona,'approved');
   const previous=process.env.RULITH_DSH_PERSONA; process.env.RULITH_DSH_PERSONA=persona;
-  let handler; let section;
-  try { await applyGate({systemPrompt:{section:value=>{section=value;}},on:(type,cb)=>{assert.equal(type,'agent/created');handler=cb;},provide:(key,value)=>{assert.equal(key,'rulithGate');assert.equal(value,true);}}); handler({agent:{ctx:scoped}}); assert.equal(section.complete,true); assert.equal(section.interpolate,false); assert.equal(section.text,`approved\n\n${ADDENDUM}`); }
+  const handlers = new Map(); let section;
+  try { await applyGate({systemPrompt:{section:value=>{section=value;}},on:(type,cb)=>{handlers.set(type,cb);},provide:(key,value)=>{assert.equal(key,'rulithGate');assert.equal(value,true);}}); handlers.get('agent/created')({agent:{ctx:scoped}}); assert.equal(typeof handlers.get('agent/pre-step'), 'function'); assert.equal(section.complete,true); assert.equal(section.interpolate,false); assert.equal(section.text,`approved\n\n${ADDENDUM}`); }
   finally { if(previous===undefined)delete process.env.RULITH_DSH_PERSONA;else process.env.RULITH_DSH_PERSONA=previous; fs.rmSync(dir,{recursive:true,force:true}); }
 });
-test('IPC plugin publishes exactly the five v4 global tools with proper dsh schemas and renderer',async()=>{
+test('IPC plugin publishes exactly the three v4 global tools with proper dsh schemas and renderer',async()=>{
   const previousProxy=process.env.RULITH_DSH_PROXY; const previousSend=process.send;
   process.env.RULITH_DSH_PROXY='ipc';
   const definitions=[];const effects=[];let published;

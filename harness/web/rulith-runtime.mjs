@@ -1,6 +1,6 @@
 // Deep Rulith, host half. It keeps the owner's Rulith Runtime manager running beside dsh: sign-in, Agent pairing and the
 // local Worker stay exactly the Runtime's own, reached only through the manager's local API. It gives dsh's agents
-// Rulith's five MCP tools for the selected Agent, and serves the browser half's account entry and Rulith panel under
+// Rulith's three MCP tools for the selected Agent, and serves the browser half's account entry and Rulith panel under
 // /rulith/api on dsh's own server (same origin). Nothing here executes model-authored work: execution happens only in
 // the Runtime's Worker, through Rulith Actions.
 import fs from 'node:fs';
@@ -9,6 +9,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
+import { installToolHistory } from '../tool-history.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installThinkingHistory } from './thinking-history.mjs';
 
@@ -53,7 +54,7 @@ export async function awaitOutcome(bridge, tool, result, { seat = bridge.seat ??
   let last = result;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, pollMs));
-    const look = await bridge.call('QueryBoard', {});
+    const look = await bridge.call('Get', {});
     if (look.isError) return last;
     last = look;
     const strip = parsed(look)?.operations;
@@ -73,6 +74,8 @@ export async function apply(ctx, config = {}) {
   const selectionFile = path.join(stateDir, 'rulith-selected.json');
   const statusFile = path.join(stateDir, 'rulith-runtime-status.json');
   const chosenName = () => readJson(selectionFile)?.agentName || config.agentName || undefined;
+  // 历史工具调用只在模型侧改名；必须先映射，再排板视图与统计已接受的 Set。
+  installToolHistory(ctx);
   // 模型看到的 Rulith 结果：最新一份整块板（+／- 标出变化），更早的只留变化（D-1008e，见 board-transcript.mjs）。
   installBoardTranscript(ctx);
   // 之前轮次的思考不再发回模型，当前这一轮保留（通用做法；见 thinking-history.mjs）。
@@ -100,7 +103,7 @@ export async function apply(ctx, config = {}) {
     return reply;
   };
 
-  // 2. The five tools follow the selected Agent. They are registered once per Agent credential and stay registered while
+  // 2. The three tools follow the selected Agent. They are registered once per Agent credential and stay registered while
   //    the connection behind them is replaced. The bridge never retries: any transport failure closes its MCP
   //    connection, whoever made the call (the panel's reads share it). A model mid-turn must not see its tools vanish
   //    over that (2026-10-06: a read failing during a network blip closed the connection, the tools were unregistered
@@ -149,7 +152,7 @@ export async function apply(ctx, config = {}) {
     return /^rulith-seat-([a-z][a-z0-9_-]{0,31})$/.exec(typeof preset === 'string' ? preset : '')?.[1] ?? 'main';
   };
   const TRANSIENT = /^(MCP transport failed|MCP request refused|MCP response unreadable|MCP connection closed|connection_replaced)$/;
-  const READS = new Set(['QueryBoard', 'ReadArtifact']);
+  const READS = new Set(['Get']);
   const invoke = async (name, args, seat = 'main') => {
     // Reaching Rulith fails before anything is sent: that error is reported as it is.
     const bridge = await liveBridge(seat);
@@ -159,7 +162,7 @@ export async function apply(ctx, config = {}) {
       // A read changes nothing, so it is asked once more on a fresh connection. A write's outcome is unknown: it is
       // never repeated here, and the model is told how to learn it.
       if (READS.has(name)) return (await liveBridge(seat)).call(name, args);
-      throw new Error('The connection to Rulith was interrupted during this call; its outcome is unknown. Do not repeat it: QueryBoard shows its outcome in the operations strip.');
+      throw new Error('The connection to Rulith was interrupted during this call; its outcome is unknown. Do not repeat it: Get shows its outcome in the operations strip.');
     }
   };
   const attach = async (agent) => {
@@ -252,7 +255,7 @@ export async function apply(ctx, config = {}) {
   };
   const board = async () => {
     if (!current) return { available: false, tools: status };
-    const result = await invoke('QueryBoard', {});
+    const result = await invoke('Get', {});
     const text = (result.content ?? []).map((part) => part.text ?? '').join('');
     let view; try { view = JSON.parse(text); } catch { return { available: true, raw: text.slice(0, 4000) }; }
     return { available: true, agentName: current.agentName, view };

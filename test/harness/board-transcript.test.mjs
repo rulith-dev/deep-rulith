@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, plan, rewriteSession, FULL_FIRST, FULL_HEAD, DELTA_HEAD, DELTA_NONE } from '../../harness/web/board-transcript.mjs';
+import { rewriteToolHistory, installToolHistory } from '../../harness/tool-history.mjs';
 
 // A Rulith tool result as dsh stores it: the MCP result serialized, with dsh's `Error: ` prefix for refusals.
 const raw = (answer, isError = false) =>
@@ -26,6 +27,74 @@ function fakeSession(texts) {
   return { log, surface, append, eventAt: (seq) => log[seq], deriveEventMessage: (event) => event.data.message,
     visible: () => surface.nodes.map((seq) => log[seq].data.message.content[0].text) };
 }
+
+test('old calls replay as Get, Set and Execute without rewriting originals or other content', () => {
+  const session = fakeSession([]);
+  const blocks = [
+    { type: 'reasoning', text: 'QueryBoard then ReadArtifact' },
+    { type: 'text', text: 'ApplyBatch is in this saved reply.' },
+    { type: 'tool-call', id: 'q', name: 'QueryBoard', input: { include: ['nodes'] } },
+    { type: 'tool-call', id: 's', name: 'ApplyBatch', input: { operations: [{ op: 'assert_fact', value: 'ApplyAction' }] } },
+    { type: 'tool-call', id: 'e', name: 'ApplyAction', input: { action: 'QueryBoard', args: { ref: 'ReadArtifact' } } },
+    { type: 'tool-call', id: 'a0', name: 'ReadArtifact', input: { ref: 'exact/ref', maxBytes: 1024 } },
+    { type: 'tool-call', id: 'a1', name: 'ReadArtifact', input: { ref: 'exact/ref', offset: 0, maxBytes: 1024 } },
+    { type: 'tool-call', id: 'a2', name: 'ReadArtifact', input: { ref: 'exact/ref', offset: 1024 } },
+    { type: 'tool-call', id: 'new', name: 'Get', input: { artifact: { ref: 'new/ref' } } },
+    { type: 'tool-call', id: 'unknown', name: 'other', input: {} },
+  ];
+  session.append('user/message', { message: { role: 'user', content: [{ type: 'text', text: 'ReadArtifact' }] } });
+  session.append('assistant/message', { turn: 2, step: 3, message: { role: 'assistant', content: blocks } });
+  session.append('tool/result', { message: { role: 'tool', toolCallId: 'a2', content: [{ type: 'text', text: raw({ artifact: { text: 'ApplyBatch' } }) }] } });
+  const original = JSON.stringify(session.log);
+  const saved = session.log.slice();
+  assert.equal(rewriteToolHistory(session), 1);
+  const projected = session.deriveEventMessage(session.eventAt(session.surface.nodes[1])).content;
+  assert.deepEqual(projected.slice(0, 2), blocks.slice(0, 2));
+  assert.deepEqual(projected.slice(2, 5), blocks.slice(2, 5).map((block, index) => ({ ...block, name: ['Get', 'Set', 'Execute'][index] })));
+  assert.deepEqual(projected.slice(5, 8), [
+    { type: 'tool-call', id: 'a0', name: 'Get', input: { artifact: { ref: 'exact/ref' } } },
+    { type: 'tool-call', id: 'a1', name: 'Get', input: { artifact: { ref: 'exact/ref', offset: 0 } } },
+    { type: 'tool-call', id: 'a2', name: 'Get', input: { artifact: { ref: 'exact/ref', offset: 1024 } } },
+  ]);
+  assert.deepEqual(projected.slice(8), blocks.slice(8));
+  assert.equal(JSON.stringify(session.log.slice(0, saved.length)), original);
+  assert.deepEqual(session.log.at(-1).sourceEventSeqs, [1]);
+  assert.equal(session.log.at(-1).data.turn, 2);
+  assert.equal(session.log.at(-1).data.step, 3);
+  assert.equal(rewriteToolHistory(session), 0, 'a second model request adds no replacements');
+  const restored = fakeSession([]);
+  for (const event of saved) restored.append(event.type, event.data);
+  assert.equal(rewriteToolHistory(restored), 1);
+  assert.deepEqual(restored.surface.nodes.map((seq) => restored.deriveEventMessage(restored.eventAt(seq))),
+    session.surface.nodes.map((seq) => session.deriveEventMessage(session.eventAt(seq))));
+});
+
+test('the pre-step hook projects restored calls before handing the conversation to the model', async () => {
+  const session = fakeSession([]);
+  session.append('assistant/message', { message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c', name: 'QueryBoard', input: {} }] } });
+  let hook;
+  installToolHistory({ on(type, handler) { assert.equal(type, 'agent/pre-step'); hook = handler; } });
+  assert.equal(await hook({ agent: { session } }, () => {
+    assert.equal(session.deriveEventMessage(session.eventAt(session.surface.nodes[0])).content[0].name, 'Get');
+    return 'continued';
+  }), 'continued');
+});
+
+test('a historical accepted ApplyBatch resets the Set reminder when replayed', () => {
+  const session = fakeSession([]);
+  for (let index = 0; index < 7; index++) {
+    session.append('assistant/message', { message: { role: 'assistant', content: [
+      { type: 'tool-call', id: `c${index}`, name: index === 6 ? 'ApplyBatch' : 'QueryBoard', input: {} },
+    ] } });
+    session.append('tool/result', { message: { role: 'tool', toolCallId: `c${index}`, content: [{ type: 'text', text: raw(answer([])) }] } });
+  }
+  rewriteToolHistory(session);
+  rewriteSession(session);
+  const last = session.deriveEventMessage(session.eventAt(session.surface.nodes.at(-1)));
+  assert.ok(!last.content[0].text.includes('Note:'));
+  assert.equal(rewriteToolHistory(session), 0);
+  assert.equal(rewriteSession(session), 0);
+});
 
 test('the latest result shows the whole Board with + and -, earlier results only their changes', () => {
   const session = fakeSession([raw(answer(['a', 'b'])), raw(answer(['a', 'c']), true), raw(answer(['a', 'c', 'd'], { result: { ok: 1 } }))]);
@@ -74,7 +143,7 @@ test('results without a Board and unreadable text are left alone', () => {
   assert.equal(rewriteSession(session), 0);
 });
 
-// 10-09：QueryBoard 的动作行带 description 与 inputSchema，其他结果不带。这是同一个动作的两种渲染，不是板的变化：比较时不看它，
+// 10-09：Get 的动作行带 description 与 inputSchema，其他结果不带。这是同一个动作的两种渲染，不是板的变化：比较时不看它，
 // 显示时照原样。
 test('an action row that differs only by description or inputSchema is unchanged; the latest view still shows them', () => {
   const ship = { action: 'ship', status: 'ready' };
@@ -108,7 +177,7 @@ test('results rewritten before 10-09 (old headers, two-space unchanged lines) ar
 });
 
 // rulith/v4（A 包）：视图按目标改名（goals.directory、goalNodes、taskStatus 以 goal 为键、position.newGoals），
-// QueryBoard 另带 observation。转录逐键摊平，不认任何段名，所以照样工作；observation 留在第一行。
+// Get 另带 observation。转录逐键摊平，不认任何段名，所以照样工作；observation 留在第一行。
 test('a rulith/v4 answer is laid out the same way: goal directory, goal nodes and taskStatus by goal', () => {
   const v4 = (status, extra = {}) => ({ accepted: true, ...extra,
     view: { position: { writes: 'open', newGoals: 'open' }, goals: { directory: [{ goal: 'g-1', label: 'tests pass', status }], total: 1 },

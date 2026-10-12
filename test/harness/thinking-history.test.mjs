@@ -23,7 +23,7 @@ function fakeSession() {
 
 const think = (text) => ({ type: 'reasoning', text });
 const say = (text) => ({ type: 'text', text });
-const call = (id) => ({ type: 'tool-call', id, name: 'QueryBoard', input: {} });
+const call = (id) => ({ type: 'tool-call', id, name: 'Get', input: {} });
 
 test('reasoning before the last user message is dropped; the current turn keeps it', () => {
   const session = fakeSession();

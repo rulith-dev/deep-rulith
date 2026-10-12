@@ -8,7 +8,7 @@
 // 结果本身（accepted、result、teaching、errorCode 等）每一份都原样保留，所以失败一步的教学不会被压掉。
 //
 // 10-09 模型的反馈（项目内容，事后报告）：表头说“整块板”，而视图自己写着 rootScope.lossy 与 dropped，两者打架——这里
-// 给的其实是“Rulith 这次返回的整个视图”，省略了什么由视图自己说；未变的行只靠两个空格，不醒目，改标 `=`；QueryBoard
+// 给的其实是“Rulith 这次返回的整个视图”，省略了什么由视图自己说；未变的行只靠两个空格，不醒目，改标 `=`；Get
 // 的动作行带 description 与 inputSchema、其他结果不带，同一批动作每次交替调用都整批 +/- 一遍，是渲染噪声——比较时不看这两项。
 //
 // 不变式（中文写明，便于审计）：
@@ -17,7 +17,9 @@
 //   2. 改写只依据对话记录本身（无内存状态），重启或回放后重算结果相同；已经改好的不再改，所以每一步通常只把
 //      上一份“最新”降为变化，前缀其余部分逐字不变，模型服务的前缀缓存照常命中。
 //   3. 这不是第二份真相：板的真相仍在 Rulith，这里只是把它沿时间拆成“历次变化 + 最新全量”给模型看。
-//   4. 读不懂的结果（传输错误、ReadArtifact 等不带板的结果）原样不动。
+//   4. 读不懂的结果（传输错误、Get artifact 等不带板的结果）原样不动。
+
+import { projectToolCall } from '../tool-history.mjs';
 
 // 旧表头（10-09 之前改写过的会话）仍然认得，下一次改写时换成新表头。
 const FULL_PREFIXES = ['Board view now (', 'Board now ('];
@@ -65,7 +67,7 @@ const expand = (counts) => [...counts].flatMap(([line, n]) => Array(n).fill(line
 const section = (line) => line.slice(0, line.indexOf(': '));
 
 /**
- * 比较用的身份：动作行去掉说明部分 description 与 inputSchema（只有 QueryBoard 的结果带它们，其他结果不带；它们是同一个
+ * 比较用的身份：动作行去掉说明部分 description 与 inputSchema（只有 Get 的结果带它们，其他结果不带；它们是同一个
  * 动作定义的另一种渲染，不是板的变化）。显示仍用原行，所以带说明的结果照样给模型看。其余行的身份就是行本身。
  */
 export function identity(line) {
@@ -149,12 +151,12 @@ function parseRendered(item) {
  * 返回与之对齐的数组：需要改写的给新文本，已经是应有形态的给 null。
  */
 // G1（D-1008j，取自 galaxy-core 实测：提醒把所学写到板上，写板次数与板上事实都明显增加）：最新一份结果之前，
-// 连续这么多次 Rulith 调用都没有被接受的 ApplyBatch，就在最新一份末尾附一句提醒。只出现在最新一份里，
+// 连续这么多次 Rulith 调用都没有被接受的 Set，就在最新一份末尾附一句提醒。只出现在最新一份里，
 // 降为变化时随之消失，所以不在对话里堆积。
 export const WRITE_NOTE_AFTER = 6;
-export const writeNote = (n) => `Note: ${n} Rulith calls since your last accepted ApplyBatch. Record what you have learned on the Board before relying on it.`;
+export const writeNote = (n) => `Note: ${n} Rulith calls since your last accepted Set. Record what you have learned on the Board before relying on it.`;
 const acceptedBatch = (item) => {
-  if (item.tool !== 'ApplyBatch') return false;
+  if (item.tool !== 'Set') return false;
   const first = item.kind === 'raw' ? item.first : item.text.split('\n')[0];
   try { return JSON.parse(first.replace(/^Error: /, '')).accepted === true; } catch { return false; }
 };
@@ -207,7 +209,7 @@ export function rewriteSession(session) {
   for (const seq of [...session.surface.nodes]) {
     const event = session.eventAt(seq);
     if (event?.type === 'assistant/message') {
-      for (const block of session.deriveEventMessage(event)?.content ?? []) if (block?.type === 'tool-call') toolOf.set(block.id, block.name);
+      for (const block of session.deriveEventMessage(event)?.content ?? []) if (block?.type === 'tool-call') toolOf.set(block.id, projectToolCall(block).name);
       continue;
     }
     if (event?.type !== 'tool/result') continue;
