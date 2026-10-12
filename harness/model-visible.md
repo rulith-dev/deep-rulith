@@ -46,7 +46,7 @@ Every Board tool result carries the Board View the authority computed for that s
 
 When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.
 
-Every answer from the authority also shows operations: this Agent's recent operations, other conversations' included, newest first. A call this Runtime did not send, or whose answer never arrived, shows no full list; QueryBoard does. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.
+Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.
 ```
 
 Addendum:
