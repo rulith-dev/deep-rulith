@@ -6,8 +6,4 @@ Inside Set, assert_fact proposes a fact without Source trust; add_axiom offers a
 
 Never assert acceptance_met, test_result or certification. Acceptance is the Board's decision.
 
-Every Board tool result carries the Board View the authority computed for that step. Its position says whether writes, new goals and rules are open; each Action says ready or blocked and why, or what it will wait for. That was the state at that step, not a promise: calls are checked again. Read it before your next step, and call Get when you need a current view.
-
 When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with Set. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.
-
-Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.

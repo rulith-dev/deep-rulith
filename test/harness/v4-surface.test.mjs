@@ -31,12 +31,14 @@ test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_i
   const persona = read('harness/runtime-persona.txt');
   assert.match(ADDENDUM, /^Your only tools are Rulith's three\./);
   assert.match(persona, /Inside Set, assert_fact/);
-  assert.match(persona, /call Get when you need a current view\./);
+  // D-1012h: the Board View paragraph left the persona; the Get description teaches reading a current view.
+  assert.doesNotMatch(persona, /Every Board tool result carries the Board View|Every answer from the authority also shows operations/);
   for (const text of [persona, ADDENDUM])
     assert.doesNotMatch(text, /\bCases?\b|OpenCase|CloseCase|case_id|case_open|case_datum|rulith\.exploration\.completed|taskStatus shows the root|QueryBoard|ApplyBatch|ApplyAction|ReadArtifact/);
   // The completion guidance of v3 (a goal leaf plus a rule deriving completion) is gone; the Board completes goals.
   assert.doesNotMatch(ADDENDUM, /goal leaf|goal_node|subgoal_of/);
-  assert.match(ADDENDUM, /The Board completes the goal by itself only when it certifies that outcome from the evidence\./);
+  // D-1012h: certification is taught once (persona and the Set description); the addendum no longer repeats it.
+  assert.doesNotMatch(ADDENDUM, /completes the goal by itself/);
   assert.match(persona, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason\./);
 });
 

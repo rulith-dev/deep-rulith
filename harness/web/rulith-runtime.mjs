@@ -9,7 +9,6 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
-import { installToolHistory } from '../tool-history.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installThinkingHistory } from './thinking-history.mjs';
 import { installProjectContext, readSourceBindings, resolveProject } from './project-source.mjs';
@@ -79,7 +78,6 @@ export async function apply(ctx, config = {}) {
   const statusFile = path.join(stateDir, 'rulith-runtime-status.json');
   const chosenName = () => readJson(selectionFile)?.agentName || config.agentName || undefined;
   // 历史工具调用只在模型侧改名；必须先映射，再排板视图与统计已接受的 Set。
-  installToolHistory(ctx);
   // 模型看到的 Rulith 结果：最新一份整块板（+／- 标出变化），更早的只留变化（D-1008e，见 board-transcript.mjs）。
   installBoardTranscript(ctx);
   // 之前轮次的思考不再发回模型，当前这一轮保留（通用做法；见 thinking-history.mjs）。

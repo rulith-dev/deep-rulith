@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, plan, rewriteSession, FULL_FIRST, FULL_HEAD, DELTA_HEAD, DELTA_NONE } from '../../harness/web/board-transcript.mjs';
-import { rewriteToolHistory, installToolHistory } from '../../harness/tool-history.mjs';
+import { projectToolCall } from '../../harness/tool-history.mjs';
 
 // A Rulith tool result as dsh stores it: the MCP result serialized, with dsh's `Error: ` prefix for refusals.
 const raw = (answer, isError = false) =>
@@ -28,7 +28,7 @@ function fakeSession(texts) {
     visible: () => surface.nodes.map((seq) => log[seq].data.message.content[0].text) };
 }
 
-test('old calls replay as Get, Set and Execute without rewriting originals or other content', () => {
+test('old calls read as Get, Set and Execute; other content is untouched', () => {
   const session = fakeSession([]);
   const blocks = [
     { type: 'reasoning', text: 'QueryBoard then ReadArtifact' },
@@ -45,10 +45,7 @@ test('old calls replay as Get, Set and Execute without rewriting originals or ot
   session.append('user/message', { message: { role: 'user', content: [{ type: 'text', text: 'ReadArtifact' }] } });
   session.append('assistant/message', { turn: 2, step: 3, message: { role: 'assistant', content: blocks } });
   session.append('tool/result', { message: { role: 'tool', toolCallId: 'a2', content: [{ type: 'text', text: raw({ artifact: { text: 'ApplyBatch' } }) }] } });
-  const original = JSON.stringify(session.log);
-  const saved = session.log.slice();
-  assert.equal(rewriteToolHistory(session), 1);
-  const projected = session.deriveEventMessage(session.eventAt(session.surface.nodes[1])).content;
+  const projected = blocks.map(projectToolCall);
   assert.deepEqual(projected.slice(0, 2), blocks.slice(0, 2));
   assert.deepEqual(projected.slice(2, 5), blocks.slice(2, 5).map((block, index) => ({ ...block, name: ['Get', 'Set', 'Execute'][index] })));
   assert.deepEqual(projected.slice(5, 8), [
@@ -57,22 +54,6 @@ test('old calls replay as Get, Set and Execute without rewriting originals or ot
     { type: 'tool-call', id: 'a2', name: 'Get', input: { artifact: { ref: 'exact/ref', offset: 1024 } } },
   ]);
   assert.deepEqual(projected.slice(8), blocks.slice(8));
-  assert.equal(JSON.stringify(session.log.slice(0, saved.length)), original);
-  assert.deepEqual(session.log.at(-1).sourceEventSeqs, [1]);
-  assert.equal(session.log.at(-1).data.turn, 2);
-  assert.equal(session.log.at(-1).data.step, 3);
-  assert.equal(rewriteToolHistory(session), 0, 'a second model request adds no replacements');
-  const restored = fakeSession([]);
-  for (const event of saved) restored.append(event.type, event.data);
-  assert.equal(rewriteToolHistory(restored), 1);
-  assert.deepEqual(restored.surface.nodes.map((seq) => restored.deriveEventMessage(restored.eventAt(seq))),
-    session.surface.nodes.map((seq) => session.deriveEventMessage(session.eventAt(seq))));
-});
-
-test('no pre-step history rewrite is installed: dsh refuses replacing an assistant/message', () => {
-  let registered = false;
-  installToolHistory({ on() { registered = true; } });
-  assert.equal(registered, false);
 });
 
 test('a historical accepted ApplyBatch resets the Set reminder when replayed', () => {
@@ -83,11 +64,9 @@ test('a historical accepted ApplyBatch resets the Set reminder when replayed', (
     ] } });
     session.append('tool/result', { message: { role: 'tool', toolCallId: `c${index}`, content: [{ type: 'text', text: raw(answer([])) }] } });
   }
-  rewriteToolHistory(session);
   rewriteSession(session);
   const last = session.deriveEventMessage(session.eventAt(session.surface.nodes.at(-1)));
   assert.ok(!last.content[0].text.includes('Note:'));
-  assert.equal(rewriteToolHistory(session), 0);
   assert.equal(rewriteSession(session), 0);
 });
 
