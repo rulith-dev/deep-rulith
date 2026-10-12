@@ -14,6 +14,16 @@ const s = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
 const modelFile = path.join(s.modelHome ?? s.managerHome, 'model-defaults.json');
 const defaults = fs.existsSync(modelFile) ? JSON.parse(fs.readFileSync(modelFile, 'utf8')).defaults ?? [] : [];
 const model = defaults.find((row) => row.key && row.url && row.name) ?? null;
+// An independent modelHome uses the same Rulith model-defaults format as the main route. Otherwise shadow follows
+// the actual dsh request route, including a provider selected on the Models page; no separate key is needed.
+const shadow = s.shadow ?? {};
+let shadowModel = null;
+if (shadow.enabled !== false && shadow.modelHome) {
+  const file = path.join(shadow.modelHome, 'model-defaults.json');
+  const rows = JSON.parse(fs.readFileSync(file, 'utf8')).defaults ?? [];
+  shadowModel = rows.find((row) => row.key && row.url && row.name) ?? null;
+  if (!shadowModel) throw new Error('Deep Rulith: no model is configured in shadow.modelHome');
+}
 const base = model ? model.url.replace(/\/+$/, '') : '';
 const env = {
   ...process.env,
@@ -23,6 +33,10 @@ const env = {
   ...(s.consoleUrl ? { RULITH_DSH_CONSOLE_URL: s.consoleUrl } : {}), ...(s.mcpUrl ? { RULITH_DSH_MCP_URL: s.mcpUrl } : {}), ...(s.agentName ? { RULITH_DSH_AGENT: s.agentName } : {}),
   RULITH_DSH_MODEL: model?.name ?? 'unset', RULITH_DSH_MODEL_BASE: base || 'http://127.0.0.1:9/unset',
   RULITH_MODEL_KEY: model?.key ?? '',
+  RULITH_DSH_SHADOW: JSON.stringify({ enabled: shadow.enabled !== false,
+    provider: shadow.provider ?? (shadowModel ? 'rulith-shadow' : undefined), model: shadow.model ?? shadowModel?.name,
+    maxTokens: shadow.maxTokens ?? 400, timeoutMs: shadow.timeoutMs ?? 120_000 }),
+  RULITH_SHADOW_MODEL_KEY: shadowModel?.key ?? '',
 };
 if (!model) console.error('Deep Rulith: no model is set in Rulith yet; set it under 更多设置 (Rulith workbench) and restart.');
 const overlay = fileURLToPath(new URL('./rulith-web.cordis.yml', import.meta.url));
@@ -51,6 +65,10 @@ function writeModelRoute() {
   if (!YAML.isMap(llm.get('config'))) llm.set('config', doc.createNode({}));
   if (!YAML.isMap(llm.getIn(['config', 'providers']))) llm.setIn(['config', 'providers'], doc.createNode({}));
   llm.setIn(['config', 'providers', 'rulith-model'], doc.createNode(route));
+  if (shadowModel) llm.setIn(['config', 'providers', 'rulith-shadow'], doc.createNode({
+    ...route, apiKeyEnv: 'RULITH_SHADOW_MODEL_KEY', baseURL: shadowModel.url.replace(/\/+$/, ''),
+    models: [{ id: shadow.model ?? shadowModel.name, contextWindow: 1000000 }],
+  }));
   const chosen = row('agent-default-model');
   if (!chosen) rows.add(doc.createNode({ id: 'agent-default-model', config: { provider: 'rulith-model', model: env.RULITH_DSH_MODEL } }));
   else if (chosen.getIn(['config', 'provider']) === 'rulith-model') chosen.setIn(['config', 'model'], env.RULITH_DSH_MODEL);
@@ -66,6 +84,7 @@ function writeModelRoute() {
 const seats = Array.isArray(s.seats) ? s.seats : [];
 for (const seat of seats) {
   if (!/^[a-z][a-z0-9_-]{0,31}$/.test(seat?.name ?? '') || seat.name === 'main') throw new Error(`Deep Rulith: seat name refused: ${JSON.stringify(seat?.name)}`);
+  if (shadow.enabled !== false && seat.name === 'shadow') throw new Error('Deep Rulith: seat shadow is reserved for the advisory pilot; do not add it to dsh seats');
 }
 const seatsPatch = path.join(s.dshHome, 'deep-rulith-seats.patch.yml');
 if (seats.length > 0) {

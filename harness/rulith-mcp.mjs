@@ -17,7 +17,7 @@ export class RulithMcp {
     this.url = url; this.token = token; this.seat = seat; this.fetch = fetchImpl; this.identity = identity;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(ceilingMs) || ceilingMs < timeoutMs) throw new Error('MCP wait bounds refused');
     this.timeoutMs = timeoutMs; this.ceilingMs = ceilingMs;
-    this.queue = Promise.resolve(); this.session = ''; this.agentId = ''; this.nextId = 0; this.closed = false;
+    this.queue = Promise.resolve(); this.session = ''; this.agentId = ''; this.focusedGoals = []; this.nextId = 0; this.closed = false;
   }
   serial(action) {
     const next = this.queue.then(() => { if (this.closed) throw new Error('MCP connection closed'); return action(); });
@@ -77,6 +77,7 @@ export class RulithMcp {
     }
     if (message?.id !== id || !message.result) { this.closed = true; throw new Error('MCP response unreadable'); }
     const meta = message.result._meta?.[NAMESPACE];
+    if (Array.isArray(meta?.focusedGoals)) this.focusedGoals = [...meta.focusedGoals];
     if (meta?.agentId) {
       if (typeof meta.agentId !== 'string' || !meta.agentId.trim()) { this.closed = true; throw new Error('MCP response unreadable'); }
       if (this.agentId && this.agentId !== meta.agentId) { this.closed = true; throw new Error('MCP identity changed'); }

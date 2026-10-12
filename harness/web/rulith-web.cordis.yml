@@ -164,6 +164,7 @@
         agentName: !!js process.env.RULITH_DSH_AGENT
         consoleUrl: !!js process.env.RULITH_DSH_CONSOLE_URL
         mcpUrl: !!js process.env.RULITH_DSH_MCP_URL
+        shadow: !!js JSON.parse(process.env.RULITH_DSH_SHADOW || '{}')
     - id: rulith-web-gate
       name: ./rulith-web-gate.mjs
       config:

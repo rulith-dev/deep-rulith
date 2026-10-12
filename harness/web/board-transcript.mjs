@@ -20,6 +20,7 @@
 //   4. 读不懂的结果（传输错误、Get artifact 等不带板的结果）原样不动。
 
 import { projectToolCall } from '../tool-history.mjs';
+import { NOTE_PREFIX } from './shadow-reviewer.mjs';
 
 // 旧表头（10-09 之前改写过的会话）仍然认得，下一次改写时换成新表头。
 const FULL_PREFIXES = ['Board view now (', 'Board now ('];
@@ -122,16 +123,19 @@ export function renderDelta(first, curr, prev) {
  * - null：不是带板的 Rulith 结果，不动。
  */
 export function classify(text) {
+  // One-shot advisory notes are appended by the Host, outside the authority's JSON. Preserve them at their step.
+  const notes = text.split('\n').filter((line) => line.startsWith(NOTE_PREFIX));
+  text = text.split('\n').filter((line) => !line.startsWith(NOTE_PREFIX)).join('\n');
   const [, second = ''] = text.split('\n', 2);
-  if (FULL_PREFIXES.some((prefix) => second.startsWith(prefix))) return { kind: 'full', text };
-  if (DELTA_PREFIXES.some((prefix) => second.startsWith(prefix))) return { kind: 'delta', text };
+  if (FULL_PREFIXES.some((prefix) => second.startsWith(prefix))) return { kind: 'full', text, notes };
+  if (DELTA_PREFIXES.some((prefix) => second.startsWith(prefix))) return { kind: 'delta', text, notes };
   const isError = text.startsWith(ERROR_PREFIX);
   try {
     const outer = JSON.parse(isError ? text.slice(ERROR_PREFIX.length) : text);
     if (!outer || !Array.isArray(outer.content)) return null;
     const answer = JSON.parse(outer.content.map((part) => part?.text ?? '').join(''));
     if (!answer || typeof answer !== 'object' || !answer.view || typeof answer.view !== 'object' || Array.isArray(answer.view)) return null;
-    return { kind: 'raw', first: restLine(answer, isError), lines: boardLines(answer) };
+    return { kind: 'raw', first: restLine(answer, isError), lines: boardLines(answer), notes };
   } catch {
     return null;
   }
@@ -191,9 +195,10 @@ export function plan(items) {
       }
     }
     const note = last && sinceWrite >= WRITE_NOTE_AFTER ? `\n${writeNote(sinceWrite)}` : '';
-    const wanted = last ? renderFull(first, curr, prev) + note : renderDelta(first, curr, prev);
+    const advisory = item.notes?.length ? '\n' + item.notes.join('\n') : '';
+    const wanted = (last ? renderFull(first, curr, prev) + note : renderDelta(first, curr, prev)) + advisory;
     prev = countLines(curr.map(identity));
-    return wanted === item.text ? null : wanted;
+    return wanted === item.text + advisory ? null : wanted;
   });
 }
 

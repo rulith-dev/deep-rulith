@@ -12,9 +12,10 @@ import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installToolHistory } from '../tool-history.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installThinkingHistory } from './thinking-history.mjs';
+import { ShadowReviewer, ShadowTriggers, decodeBoardResult, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 export const name = 'rulith-runtime';
-export const inject = ['tools', 'webServer'];
+export const inject = ['tools', 'webServer', 'llm'];
 
 const listening = (port) => new Promise((resolve) => {
   const socket = net.connect({ host: '127.0.0.1', port }, () => { socket.destroy(); resolve(true); });
@@ -71,6 +72,8 @@ export async function apply(ctx, config = {}) {
   const key = fs.readFileSync(config.keyFile, 'utf8').trim();
   const consoleUrl = config.consoleUrl || 'https://console.rulith.ai';
   const stateDir = process.env.DSH_HOME ?? home;
+  const shadowSettings = config.shadow ?? {};
+  const shadowLog = reviewLog(path.join(stateDir, 'logs'));
   const selectionFile = path.join(stateDir, 'rulith-selected.json');
   const statusFile = path.join(stateDir, 'rulith-runtime-status.json');
   const chosenName = () => readJson(selectionFile)?.agentName || config.agentName || undefined;
@@ -117,6 +120,7 @@ export async function apply(ctx, config = {}) {
   const drop = () => {
     if (!current) return;
     for (const dispose of current.disposers) dispose();
+    current.shadow?.close();
     current.bridge.close();
     for (const bridge of current.seats.values()) bridge.close();
     current = null;
@@ -167,18 +171,75 @@ export async function apply(ctx, config = {}) {
   };
   const attach = async (agent) => {
     const { bridge, listed } = await connect(agent.token);
+    const holder = { token: agent.token, agentName: agent.agentName, bridge, seats: new Map(), disposers: [], shadow: null };
+    const triggers = new ShadowTriggers();
+    const calls = new Map();
+    const shadowBridge = async () => {
+      if (current !== holder) throw new Error('shadow Agent detached');
+      const connection = await liveBridge('shadow');
+      if (current !== holder) throw new Error('shadow Agent detached');
+      return connection;
+    };
+    holder.shadow = new ShadowReviewer({ enabled: shadowSettings.enabled !== false, log: shadowLog,
+      chat: (route, user, signal) => reviewWithModel(ctx.llm, route, user, signal),
+      async readBoard(beat) {
+        // All supplemental reads use shadow's lane; no read is queued ahead of a main model call.
+        let connection;
+        try { connection = await shadowBridge(); }
+        catch (error) {
+          const reason = String(error?.message ?? error).slice(0, 300);
+          console.error(`[shadow] seat session unavailable (${reason}); reviewing the delivered Board view only`);
+          if (!beat.view || beat.view.unavailable) throw new Error('shadow Board view unavailable');
+          return { views: [beat.view, { supplementalReadUnavailable: true }], writeUnavailable: `shadow seat session unavailable: ${reason} (check seat shadow in Console)` };
+        }
+        const discovery = await connection.call('Get', {});
+        if (discovery.isError || decodeBoardResult(discovery)?.accepted !== true || !decodeBoardResult(discovery)?.view) throw new Error('shadow default Board read refused');
+        const views = [decodeBoardResult(discovery).view];
+        if (beat.focusedGoals.length) {
+          const nodes = await connection.call('Get', { include: ['nodes'], selector: { goals: beat.focusedGoals } });
+          if (nodes.isError || decodeBoardResult(nodes)?.accepted !== true || !decodeBoardResult(nodes)?.view) throw new Error('shadow focused Board read refused');
+          views.push(decodeBoardResult(nodes).view);
+        }
+        return { views };
+      },
+      write: async (args) => (await shadowBridge()).call('Set', args),
+    });
     const disposers = listed.tools.map((tool) => ctx.tools.register({
       name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
       output: { schema: {}, render(_args, value) { return [{ type: 'text', text: JSON.stringify(value) }]; } },
+      finalizeContent(exec, result) {
+        if (current !== holder) return;
+        const notes = holder.shadow.takeNotes(exec.agent?.session?.id);
+        return notes.length ? [...result.content, { type: 'text', text: '\n' + notes.join('\n') }] : undefined;
+      },
       async execute(args, exec) {
         const seat = seatOf(exec);
+        const session = exec.agent?.session?.id;
+        if (tool.name === 'Set') holder.shadow.observeSet(session, args);
         const call = (name, input) => invoke(name, input, seat);
         const result = await call(tool.name, args);
-        if (result.isError) throw new Error(JSON.stringify(result));
-        return awaitOutcome({ call }, tool.name, result, { seat });
+        const outcome = result.isError ? result : await awaitOutcome({ call }, tool.name, result, { seat });
+        const mainBridge = seat === 'main' ? holder.bridge : holder.seats.get(seat);
+        // Read only the current request's routing config, never its messages or reasoning.
+        const mainRoute = exec.agent?.session?.requestHeader?.()?.config ?? exec.agent?.options ?? {};
+        calls.set(exec.token, { session, seat, outcome, origin: decodeBoardResult(result), view: decodeBoardResult(outcome)?.view,
+          focusedGoals: [...(mainBridge?.focusedGoals ?? [])],
+          route: { provider: shadowSettings.provider ?? mainRoute.provider ?? 'rulith-model',
+            model: shadowSettings.model ?? mainRoute.model ?? process.env.RULITH_DSH_MODEL,
+            maxTokens: shadowSettings.maxTokens ?? 400 }, timeoutMs: shadowSettings.timeoutMs ?? 120_000 });
+        if (outcome.isError) throw new Error(JSON.stringify(outcome));
+        return outcome;
       },
     }));
-    current = { token: agent.token, agentName: agent.agentName, bridge, seats: new Map(), disposers };
+    disposers.push(ctx.on('tools/result', (exec) => {
+      const beat = calls.get(exec.token); calls.delete(exec.token);
+      if (!beat || current !== holder) return;
+      // dsh has finalized/materialized the result. Schedule review only after the result returns to its loop.
+      // A refused tool can still deliver an earlier operation's settled outcome in its strip.
+      for (const next of triggers.observe(exec.name, beat.outcome, beat)) holder.shadow.beat(next);
+    }));
+    holder.disposers = disposers;
+    current = holder;
   };
   let busy = false;
   const tick = async () => {
