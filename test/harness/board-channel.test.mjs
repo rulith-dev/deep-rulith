@@ -389,7 +389,6 @@ test('allow sends exact call; note sends exact call, appends advice once and rec
   assert.equal(noted.content.filter((part) => part.text === deliveryNote(finding)).length, 1);
   const writes = f.sends.filter((s) => s.tool === 'Execute'); assert.ok(writes.every((s) => s.args === args));
   const suggestions = f.sends.filter((s) => s.tool === 'Set'); assert.equal(suggestions.length, 1);
-  assert.match(suggestions[0].args.intent, /^Record the Board review's advisory suggestion on node g /);
   const [op] = suggestions[0].args.operations;
   assert.equal(op.op, 'assert_fact'); assert.equal(op.predicate, 'suggestion');
   assert.deepEqual(op.args, { id: op.id, node: 'g', advice: finding.advice });

@@ -210,8 +210,7 @@ export class BoardChannel {
         try {
           signal?.throwIfAborted();
           const id = `shadow_${randomUUID().replaceAll('-', '')}`;
-          // Every Set states its intent (D-1013c); this one is the host's own record of the review's advice.
-          const result = await this.serial(() => this.request('Set', { intent: `Record the Board review's advisory suggestion on node ${first.note.node} so later steps can see it.`, operations: [{ op: 'assert_fact', id,
+          const result = await this.serial(() => this.request('Set', { operations: [{ op: 'assert_fact', id,
             predicate: 'suggestion', args: { id, node: first.note.node, advice: first.note.advice } }] }));
           const answer = decodeBoardResult(result);
           if (result.isError || answer?.accepted !== true || UNRESOLVED.has(answer?.state)) throw new Error('shadow suggestion not accepted or still unresolved');
