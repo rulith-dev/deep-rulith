@@ -16,9 +16,12 @@ const defaults = fs.existsSync(modelFile) ? JSON.parse(fs.readFileSync(modelFile
 const model = defaults.find((row) => row.key && row.url && row.name) ?? null;
 // An independent modelHome uses the same Rulith model-defaults format as the main route. Otherwise shadow follows
 // the actual dsh request route, including a provider selected on the Models page; no separate key is needed.
+// D-1013c: the Board review now runs on the platform (a reviewer Connection designated in Console), so the host-side
+// shadow is off unless the settings turn it on with "shadow": {"enabled": true}.
 const shadow = s.shadow ?? {};
+const hostShadow = shadow.enabled === true;
 let shadowModel = null;
-if (shadow.enabled !== false && shadow.modelHome) {
+if (hostShadow && shadow.modelHome) {
   const file = path.join(shadow.modelHome, 'model-defaults.json');
   const rows = JSON.parse(fs.readFileSync(file, 'utf8')).defaults ?? [];
   shadowModel = rows.find((row) => row.key && row.url && row.name) ?? null;
@@ -33,12 +36,32 @@ const env = {
   ...(s.consoleUrl ? { RULITH_DSH_CONSOLE_URL: s.consoleUrl } : {}), ...(s.mcpUrl ? { RULITH_DSH_MCP_URL: s.mcpUrl } : {}), ...(s.agentName ? { RULITH_DSH_AGENT: s.agentName } : {}),
   RULITH_DSH_MODEL: model?.name ?? 'unset', RULITH_DSH_MODEL_BASE: base || 'http://127.0.0.1:9/unset',
   RULITH_MODEL_KEY: model?.key ?? '',
-  RULITH_DSH_SHADOW: JSON.stringify({ enabled: shadow.enabled !== false,
+  RULITH_DSH_SHADOW: JSON.stringify({ enabled: hostShadow,
     provider: shadow.provider ?? (shadowModel ? 'rulith-shadow' : undefined), model: shadow.model ?? shadowModel?.name,
     maxTokens: shadow.maxTokens ?? 8000, timeoutMs: shadow.timeoutMs ?? 120_000 }),
   RULITH_SHADOW_MODEL_KEY: shadowModel?.key ?? '',
 };
 if (!model) console.error('Deep Rulith: no model is set in Rulith yet; set it under 更多设置 (Rulith workbench) and restart.');
+// The local Worker can be the platform's pre-execution reviewer (Runtime 0.16.0): it advertises the capability when its
+// environment names an OpenAI-compatible endpoint and model. The managed host gives the Worker only its instance's
+// worker.env, so the main model's route is written there on every start (the key moves file to file, never printed).
+// Designating the Connection as reviewer in Console is what turns the review on.
+if (model) {
+  const instances = path.join(s.managerHome, 'instances');
+  for (const name of fs.existsSync(instances) ? fs.readdirSync(instances) : []) {
+    const file = path.join(instances, name, 'local.json');
+    if (!fs.existsSync(file)) continue;
+    const local = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!local.worker?.enabled) continue;
+    const want = { RULITH_REVIEWER_URL: `${base}/chat/completions`, RULITH_REVIEWER_MODEL: model.name, RULITH_REVIEWER_KEY: model.key };
+    const env = local.worker.env ?? {};
+    if (Object.entries(want).every(([k, v]) => env[k] === v)) continue;
+    local.worker.env = { ...env, ...want };
+    fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(local, null, 2)}
+`, { mode: 0o600 });
+    fs.renameSync(`${file}.tmp`, file);
+  }
+}
 const overlay = fileURLToPath(new URL('./rulith-web.cordis.yml', import.meta.url));
 const profile = s.profile ?? 'rulith';
 const profilePatch = path.join(s.dshHome, 'profiles', profile, 'cordis.patch.yml');

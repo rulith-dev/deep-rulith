@@ -8,5 +8,5 @@
   "runtimeEntry": "/path/to/deep-rulith/node_modules/rulith/local/rulith-local.mjs",
   "persona": "/path/to/deep-rulith/harness/runtime-persona.txt",
   "webPort": 3080,
-  "shadow": { "enabled": true }
+  "shadow": { "enabled": false }
 }
