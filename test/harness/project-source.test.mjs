@@ -149,7 +149,7 @@ test('Source reader reuses the existing Worker channel and projects only binding
   assert.deepEqual(await readSourceBindings(env, async () => ({ ok: true, json: async () => ({ sources: [] }) })), []);
 });
 
-test('Board panel renders this session project beside Worker and hides another workspace response', () => {
+test('Board panel renders the cached view, operations, receipt time and empty state beside this session project', () => {
   let plugin, column;
   const cwd = work + '/rulith-java';
   let values, index;
@@ -161,14 +161,21 @@ test('Board panel renders this session project beside Worker and hides another w
   plugin.apply({ effect() {}, inject() {}, sidebarRight: { mounted: { subscribe() {} } },
     slots: { inject(_name, fn) { if (fn.constructor.name !== 'GeneratorFunction') fn(); },
       register(opts, component) { if (opts.name === 'sidebar.right.pane.tab') column = component; } } });
-  const render = (workspace) => {
+  const seenAt = '2026-10-13T08:09:10.000Z';
+  const boardData = { ok: true, available: true, view: {}, operations: [{ label: 'cached operation', state: 'done' }], seenAt };
+  const render = (workspace, data = boardData) => {
     index = 0;
     values = [{ ok: true, workspace, project: { name: 'rulith-java' } },
-      { ok: true, available: true, view: {} }, { ok: true, available: true, state: 'online' }, null];
+      data, { ok: true, available: true, state: 'online' }, null];
     return column({ sessionId: 'java-conversation', useSessions: (selector) => selector({ byId: { 'java-conversation': { cwd } } }) });
   };
   const workerBlock = render(cwd).children.find((node) => node?.children?.[0]?.children?.[0]?.children?.[0] === '本机执行（Worker）');
   assert.equal(workerBlock.children[0].children[1].children[0], 'rulith-java');
   const stale = render(work + '/strixllama').children.find((node) => node?.children?.[0]?.children?.[0]?.children?.[0] === '本机执行（Worker）');
   assert.equal(stale.children[0].children[1], null);
+  const texts = (node) => typeof node === 'string' ? [node] : (node?.children ?? []).flat(Infinity).flatMap(texts);
+  const received = texts(render(cwd));
+  assert.ok(received.includes('cached operation'));
+  assert.ok(received.includes('最近收到 Board：' + new Date(seenAt).toLocaleString()));
+  assert.deepEqual(texts(render(cwd, { ok: true, available: true })), ['还没有 Board 视图。']);
 });

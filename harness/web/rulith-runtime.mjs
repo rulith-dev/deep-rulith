@@ -21,6 +21,12 @@ export { awaitOutcome } from '../board-channel.mjs';
 export const name = 'rulith-runtime';
 export const inject = ['tools', 'webServer', 'llm'];
 
+/** The panel observes results already received on this Agent's channel; it never calls MCP. */
+export function cachedBoard(current, status) {
+  if (!current) return { available: false, tools: status };
+  return { available: true, agentName: current.agentName, ...current.channel.latestBoard };
+}
+
 const listening = (port) => new Promise((resolve) => {
   const socket = net.connect({ host: '127.0.0.1', port }, () => { socket.destroy(); resolve(true); });
   socket.on('error', () => resolve(false));
@@ -80,7 +86,7 @@ export async function apply(ctx, config = {}) {
 
   // 2. The three tools follow the selected Agent. They are registered once per Agent credential and stay registered while
   //    the connection behind them is replaced. The bridge never retries: any transport failure closes its MCP
-  //    connection, whoever made the call (the panel's reads share it). A model mid-turn must not see its tools vanish
+  //    connection, whichever hand made the call. A model mid-turn must not see its tools vanish
   //    over that (2026-10-06: a read failing during a network blip closed the connection, the tools were unregistered
   //    and re-registered, the model got "unknown tool" and gave up its turn).
   let current = null;
@@ -129,10 +135,6 @@ export async function apply(ctx, config = {}) {
       if (name === 'Get') return (await liveBridge()).call(name, args);
       throw new Error('The connection to Rulith was interrupted during this call; its outcome is unknown. Do not repeat it: Get shows its outcome in the operations strip.');
     }
-  };
-  const invoke = (name, args, options) => {
-    if (!current) throw new Error('Rulith is not attached: choose an Agent with the Deep Rulith entry.');
-    return current.channel.call(name, args, options);
   };
   const attach = async (agent) => {
     const { bridge, listed } = await connect(agent.token);
@@ -236,13 +238,6 @@ export async function apply(ctx, config = {}) {
       }
     }
     return instance.id;
-  };
-  const board = async () => {
-    if (!current) return { available: false, tools: status };
-    const result = await invoke('Get', {});
-    const text = (result.content ?? []).map((part) => part.text ?? '').join('');
-    let view; try { view = JSON.parse(text); } catch { return { available: true, raw: text.slice(0, 4000) }; }
-    return { available: true, agentName: current.agentName, view };
   };
   // The selected Agent's local Worker as its own Trace shows it: availability, lease and its latest steps. Read from the
   // instance's event stream through the manager (the address carries the instance key and stays in this process);
@@ -400,7 +395,7 @@ export async function apply(ctx, config = {}) {
       await manager('/manager/instances/worker-setting', { instanceId: String(body.instanceId ?? ''), enabled: body.enabled === true });
       return summary(await manager('/manager/state'));
     },
-    'GET /rulith/api/board': board,
+    'GET /rulith/api/board': () => cachedBoard(current, status),
     // The workbench address carries the manager key: handed out only on this guarded same-origin request.
     'POST /rulith/api/workbench': async () => ({ url: `http://127.0.0.1:${port}/?k=${key}` }),
   };

@@ -1,4 +1,4 @@
-// One FIFO for every hand and the panel. A queue entry owns review + initial request only;
+// One FIFO for every hand. The panel only reads cached results. A queue entry owns review + initial request only;
 // a held operation's follow-up reads rejoin the FIFO. The operation slot lasts through return,
 // including the shadow suggestion; review reads and dispatch stay adjacent on the same transport.
 import fs from 'node:fs';
@@ -108,6 +108,7 @@ export class BoardChannel {
     Object.assign(this, { invoke, focusedGoals, toolKinds, shadow, visible });
     this.queue = Promise.resolve(); this.blocks = new Map(); this.pending = new Map(); this.closed = false;
     this.operation = null; this.operationWaiters = []; this.stop = new AbortController();
+    this.latestBoard = null;
   }
   acquireOperation(signal) {
     if (this.closed) return Promise.reject(new Error('MCP connection closed'));
@@ -137,7 +138,9 @@ export class BoardChannel {
   }
   async request(tool, args) {
     const result = await this.invoke(tool, args);
-    for (const entry of decodeBoardResult(result)?.operations ?? []) {
+    const answer = decodeBoardResult(result);
+    if (answer?.view) this.latestBoard = { view: answer.view, operations: answer.operations ?? [], seenAt: new Date().toISOString() };
+    for (const entry of answer?.operations ?? []) {
       if (!mainEntry(entry)) continue;
       const key = keyOf(entry);
       if (this.pending.has(key) && entry.state !== 'running') this.pending.set(key, deliveredOutcome(result, entry));

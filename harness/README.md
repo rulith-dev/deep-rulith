@@ -29,7 +29,9 @@ Stock presets and shell/file/web/plugin-manager/job tools remain disabled.
 
 ## One Board channel and shadow (D-1013a)
 
-board-channel.mjs owns one FIFO for all hands, the panel, and shadow calls on the main MCP bridge. Review reads,
+board-channel.mjs owns one FIFO for all hands and shadow calls on the main MCP bridge. The panel refreshes only
+the host's local cache of the latest tool result's Board view and operations strip, with its receipt time;
+before the first Board-bearing result it shows no view. Panel reads never send MCP calls. Review reads,
 inference and the initial write form one queue entry, keeping the Board and proposed step adjacent. Once the authority
 returns running, the FIFO entry releases but a separate operation slot stays held through awaitOutcome and any
 suggestion write; other operations wait outside the FIFO while plain Gets and polls pass. Operations are matched

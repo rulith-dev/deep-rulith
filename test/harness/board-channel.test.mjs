@@ -7,6 +7,7 @@ import { BoardChannel, blockedResult, isWrite, readToolKinds } from '../../harne
 import { ShadowReviewer, decodeBoardResult, deliveryNote } from '../../harness/web/shadow-reviewer.mjs';
 import { installGate, ADDENDUM, CHILD_ADDENDUM } from '../../harness/web/rulith-web-gate.mjs';
 import { handOf, DELEGATION_TOOLS } from '../../harness/subagents.mjs';
+import { cachedBoard } from '../../harness/web/rulith-runtime.mjs';
 
 const result = (answer, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(answer) }], ...(isError ? { isError } : {}) });
 const view = { goals: { directory: [{ goal: 'g' }] }, facts: [{ nodeId: 'n', label: 'criterion(n)' }], actions: [
@@ -14,6 +15,54 @@ const view = { goals: { directory: [{ goal: 'g' }] }, facts: [{ nodeId: 'n', lab
   { action: 'write', description: '[worker tool] demo.change@1' },
 ] };
 const immediate = () => new Promise((resolve) => setImmediate(resolve));
+
+test('panel reads are empty before the first result and never invoke MCP', () => {
+  const channel = new BoardChannel({ invoke() { assert.fail('panel read invoked MCP'); } });
+  const holder = { agentName: 'test-agent', channel };
+  assert.equal(channel.latestBoard, null);
+  for (let i = 0; i < 10; i++) assert.deepEqual(cachedBoard(holder), { available: true, agentName: 'test-agent' });
+  assert.deepEqual(cachedBoard(null, { state: 'no_agent' }), { available: false, tools: { state: 'no_agent' } });
+});
+
+test('panel reads the latest Board and operations from every tool and hand, including refusals', async () => {
+  const sends = [];
+  let reply;
+  const channel = new BoardChannel({ invoke: async (tool, args) => { sends.push({ tool, args }); return reply; } });
+  const holder = { agentName: 'test-agent', channel };
+  for (const [tool, hand, isError] of [['Get', 'main', false], ['Set', 'child', false], ['Execute', 'child', true]]) {
+    const nextView = { ...view, position: { tool } };
+    const operations = [{ tool, label: 'received', at: tool, state: isError ? 'refused' : 'done' }];
+    reply = result({ accepted: !isError, view: nextView, operations }, isError);
+    const before = Date.now();
+    assert.equal(await channel.call(tool, {}, { hand }), reply, 'caching preserves the tool result');
+    const after = Date.now();
+    for (let i = 0; i < 10; i++) {
+      const snapshot = cachedBoard(holder);
+      assert.deepEqual(snapshot.view, nextView);
+      assert.deepEqual(snapshot.operations, operations);
+      assert.ok(Date.parse(snapshot.seenAt) >= before && Date.parse(snapshot.seenAt) <= after);
+    }
+  }
+  assert.deepEqual(sends.map(({ tool }) => tool), ['Get', 'Set', 'Execute']);
+  const replacement = new BoardChannel({ invoke() { assert.fail('new channel panel invoked MCP'); } });
+  assert.equal(cachedBoard({ ...holder, channel: replacement }).view, undefined, 'another Agent starts with no cached view');
+});
+
+test('channel caches internal request results and keeps the snapshot across results without a Board', async () => {
+  let reply = result({ accepted: true, view, operations: [{ tool: 'Set', state: 'done' }] });
+  const channel = new BoardChannel({ invoke: async () => reply });
+  await channel.request('Set', { operations: [] });
+  const snapshot = channel.latestBoard;
+  for (const next of [result({ accepted: true, result: 'artifact' }), { content: [{ type: 'text', text: 'unreadable' }] }]) {
+    reply = next;
+    await channel.call('Get', {});
+    assert.equal(channel.latestBoard, snapshot);
+  }
+  reply = result({ accepted: true, view: { goals: {} } });
+  await channel.request('Get', {});
+  assert.deepEqual(channel.latestBoard.operations, [], 'an absent strip does not keep old operations');
+});
+
 function fixture(replies = ['allow'], extra = {}) {
   const sends = [], reviews = [], logs = [], visible = [];
   const shadow = new ShadowReviewer({ chat: async (_route, user) => {

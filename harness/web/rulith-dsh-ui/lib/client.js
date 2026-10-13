@@ -157,6 +157,7 @@ window.__ModuleLoader__.load({
     function RulithColumn({ sessionId, useSessions }) {
       const workspace = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
       const [project, refreshProject] = usePoll("project?workspace=" + encodeURIComponent(workspace || ""), 6000);
+      // Refresh the host's local snapshot; this route never sends a Board Get.
       const [data, refresh] = usePoll("board", 6000);
       const [worker, refreshWorker] = usePoll("worker", 6000);
       const [health, refreshHealth] = usePoll("health", 60000);
@@ -167,10 +168,10 @@ window.__ModuleLoader__.load({
       if (!data) return h("div", { style: { padding: 12 } }, "正在读取 Rulith…");
       if (!data.ok) return h("div", { style: { padding: 12, color: AMBER } }, data.teaching || "读不到 Rulith");
       if (!data.available) return h("div", { style: { padding: 12 } }, "还没有接入 Rulith：请在左下角登录并选择 Agent。");
-      const view = data.view || {};
-      const board = view.view || view;
+      if (!data.view) return h("div", { style: { padding: 12 } }, "还没有 Board 视图。");
+      const board = data.view;
       const directory = board.goals && Array.isArray(board.goals.directory) ? board.goals.directory : [];
-      const ops = view.operations || board.operations || [];
+      const ops = data.operations || [];
       const goals = Array.isArray(board.goalNodes) ? board.goalNodes : [];
       const frontier = Array.isArray(board.frontier) ? board.frontier : Array.isArray(board.gaps) ? board.gaps : [];
       const actions = Array.isArray(board.actions) ? board.actions : [];
@@ -228,6 +229,7 @@ window.__ModuleLoader__.load({
       return h("div", { style: { padding: 12, fontSize: 13, overflow: "auto", height: "100%", boxSizing: "border-box" } },
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
           h("b", null, "Rulith · " + (data.agentName || "")), h("button", { style: button, onClick: reload }, "刷新")),
+        h("div", { style: { ...small, marginBottom: 10 } }, "最近收到 Board：" + new Date(data.seenAt).toLocaleString()),
         unbound.length ? block("工作文件夹", "", h("div", null,
           h("div", { style: { fontSize: 12, marginBottom: 4 } }, "选一个这台电脑上的文件夹给 " + unbound.map((item) => item.source).join("、") + "，然后在 Console 确认一次。"),
           h("div", { style: { display: "flex", gap: 6 } },
