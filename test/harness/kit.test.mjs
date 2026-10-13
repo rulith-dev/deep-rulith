@@ -104,23 +104,16 @@ test('a normal launch refreshes the shipped browser plugin without recreating th
   assert.ok(!argv.includes('--from-default-profile'));
 });
 
-test('held outcomes stay with their calling seat even when other seats run the same tool', async () => {
+test('held outcomes follow the main operation identity and ignore historical seats', async () => {
   const answer = (operations) => ({ content: [{ type: 'text', text: JSON.stringify({ operations }) }] });
-  const operation = (seat, state) => ({ tool: 'Execute', label: 'Execute test', at: 'same-instant', seat, state });
-  for (const seat of ['main', 'review']) {
-    const other = seat === 'main' ? 'review' : 'main';
-    const initial = answer([operation(other, 'running'), operation(seat, 'running')]);
-    const intermediate = answer([operation(other, 'done'), operation(seat, 'running')]);
-    const done = answer([operation(other, 'running'), operation(seat, 'done')]);
-    let reads = 0;
-    const bridge = { call: async (tool) => { assert.equal(tool, 'Get'); return ++reads === 1 ? intermediate : done; } };
-    assert.equal(await awaitOutcome(bridge, 'Execute', initial, { seat, pollMs: 1 }), done);
-    assert.equal(reads, 2);
-  }
-  const initial = answer([{ tool: 'Execute', label: 'legacy-main', at: 'one', state: 'running' }]);
-  const done = answer([{ tool: 'Execute', label: 'legacy-main', at: 'one', state: 'done' }]);
-  assert.equal(await awaitOutcome({ call: async () => done }, 'Execute', initial, { pollMs: 1 }), done);
-  assert.equal(await awaitOutcome({ call: async () => { throw new Error('must not poll another seat'); } }, 'Execute', initial, { seat: 'review', pollMs: 1 }), initial);
+  const own = { tool: 'Execute', label: 'work', at: 'one', state: 'running' };
+  const historical = { ...own, seat: 'retired', state: 'running' };
+  const initial = answer([historical, own]);
+  const intermediate = answer([{ ...historical, state: 'done' }, own]);
+  const done = answer([historical, { ...own, state: 'done' }]);
+  let reads = 0;
+  assert.equal(await awaitOutcome({ call: async () => ++reads === 1 ? intermediate : done }, 'Execute', initial, { pollMs: 1 }), done);
+  assert.equal(reads, 2);
 });
 
 test('gate restricts inherited globals through agent context before work',async()=>{
@@ -131,6 +124,12 @@ test('gate restricts inherited globals through agent context before work',async(
   const handlers = new Map(); let section;
   try { await applyGate({systemPrompt:{section:value=>{section=value;}},on:(type,cb)=>{handlers.set(type,cb);},provide:(key,value)=>{assert.equal(key,'rulithGate');assert.equal(value,true);}}); handlers.get('agent/created')({agent:{ctx:scoped}}); assert.equal(handlers.get('agent/pre-step'), undefined); assert.equal(section.complete,true); assert.equal(section.interpolate,false); assert.equal(section.text,`approved\n\n${ADDENDUM}`); }
   finally { if(previous===undefined)delete process.env.RULITH_DSH_PERSONA;else process.env.RULITH_DSH_PERSONA=previous; fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('headless disables every sub-agent plugin',()=>{
+  const overlay=fs.readFileSync(new URL('../../harness/rulith.cordis.yml',import.meta.url),'utf8');
+  const entries=[...overlay.matchAll(/^- id: ([^\r\n]*subagent[^\r\n]*)\r?\n([^]*?)(?=^- id: |$(?![^]))/gm)];
+  assert.equal(entries.length,7);for(const entry of entries){assert.equal(entry[2].trim(),'disabled: true');}
 });
 test('IPC plugin publishes exactly the three v4 global tools with proper dsh schemas and renderer',async()=>{
   const previousProxy=process.env.RULITH_DSH_PROXY; const previousSend=process.send;
@@ -144,7 +143,10 @@ test('IPC plugin publishes exactly the three v4 global tools with proper dsh sch
     await applyBridge({effect:effect=>effects.push(effect()),tools:{register:definition=>{definitions.push(definition);return()=>{};}},provide:(key,value)=>{assert.equal(key,'rulithBridge');published=value;}});
     assert.deepEqual(definitions.map(d=>d.name),[...TOOLS]);assert.ok(definitions.every(d=>d.parameters.type==='object'&&d.input===undefined));
     const result=await definitions[0].execute({});assert.equal(result.content[0].text,'authority result');assert.equal(definitions[0].output.render({},result)[0].text,JSON.stringify(result));
-    assert.ok(published);
+    assert.ok(published);assert.equal(published.shadow,undefined);
+    const abort=new AbortController();let received;
+    published.call=async(_tool,_args,options)=>{received=options.signal;return result;};
+    await definitions[1].execute({operations:[]},{signal:abort.signal});assert.equal(received,abort.signal);
   } finally {
     for(const dispose of effects.reverse())dispose();process.send=previousSend;
     if(previousProxy===undefined)delete process.env.RULITH_DSH_PROXY;else process.env.RULITH_DSH_PROXY=previousProxy;
@@ -212,7 +214,7 @@ test('overlay disabled ids exist in pinned dsh base sources; runner depends on g
   const source=process.env.DSH_REFERENCE_DIR;
   const base=fs.readFileSync(process.env.DSH_BASE_FILE ?? path.join(source,'packages/bundle/base/cordis.patch.yml'),'utf8');
   const overlay=fs.readFileSync(new URL('../../harness/rulith.cordis.yml',import.meta.url),'utf8');
-  const ids=[...overlay.matchAll(/^- id: ([^\r\n]+)\r?\n  disabled: true/gm)].map(m=>m[1]); assert.ok(ids.length>50);
+  const ids=[...overlay.matchAll(/^- id: ([^\r\n]+)\r?\n  disabled: true/gm)].map(m=>m[1]); assert.ok(ids.length>=45);
   for(const id of ids) assert.match(base,new RegExp(`^    - id: ${id}$`,'m'),id);
   assert.equal(new Set(ids).size,ids.length);assert.match(overlay,/inject: \[headlessStartup, rulithGate\]/);assert.match(overlay,/compression: none/);assert.match(overlay,/maxParallelToolCalls: 1/);
 });

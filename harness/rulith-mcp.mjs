@@ -9,12 +9,11 @@ export const inject = ['tools'];
 export const surfaceAccepted = (listed) => !listed?.nextCursor && Array.isArray(listed?.tools) && listed.tools.length === TOOLS.length
   && new Set(listed.tools.map(t => t.name)).size === TOOLS.length && TOOLS.every(t => listed.tools.some(x => x.name === t));
 export class RulithMcp {
-  constructor({ url, token, seat = 'main', fetchImpl = fetch, identity = () => {}, timeoutMs = 75_000, ceilingMs = 600_000 }) {
+  constructor({ url, token, fetchImpl = fetch, identity = () => {}, timeoutMs = 75_000, ceilingMs = 600_000 }) {
     const endpoint = new URL(url);
     if ((endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('MCP endpoint refused');
     if (!token) throw new Error('Agent token required');
-    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(seat)) throw new Error('seat refused');
-    this.url = url; this.token = token; this.seat = seat; this.fetch = fetchImpl; this.identity = identity;
+    this.url = url; this.token = token; this.fetch = fetchImpl; this.identity = identity;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(ceilingMs) || ceilingMs < timeoutMs) throw new Error('MCP wait bounds refused');
     this.timeoutMs = timeoutMs; this.ceilingMs = ceilingMs;
     this.queue = Promise.resolve(); this.session = ''; this.agentId = ''; this.focusedGoals = []; this.nextId = 0; this.closed = false;
@@ -87,9 +86,8 @@ export class RulithMcp {
   }
   initialize() {
     return this.serial(async () => {
-      // 声明 rulith/v4（形状同 C1 后的 v3）：heldCalls:1——这个宿主给每个被持有的调用带 progressToken，并且等过持有上限；
-      // 席位（C1，D-1008h）只在非 main 时声明，不声明即 main。v3 的 Gateway 不认这个声明，随后的工具检查拒绝它。
-      const capabilities = { experimental: { [NAMESPACE]: this.seat === 'main' ? { heldCalls: 1 } : { heldCalls: 1, seat: this.seat } } };
+      // Every hand uses the one main session. Held calls carry a progress token and outlive the hold bound.
+      const capabilities = { experimental: { [NAMESPACE]: { heldCalls: 1 } } };
       const result = await this.request('initialize', { protocolVersion: PROTOCOL, capabilities, clientInfo: { name: 'rulith-dsh', version: '0.11.0' } });
       if (result.protocolVersion !== PROTOCOL || !this.session || !this.agentId) { this.closed = true; throw new Error('MCP handshake refused'); }
       await this.request('notifications/initialized', {}, { notification: true });
@@ -111,17 +109,21 @@ export class RulithMcp {
   close() { this.closed = true; this.requestAbort?.abort(); }
 }
 export async function apply(ctx) {
+  // Headless uses the same channel and held-outcome wait, without delegation or shadow inference.
+  const { BoardChannel, renderChannelResult } = await import('./board-channel.mjs');
   const bridge = process.env.RULITH_DSH_PROXY === 'ipc' ? ipcBridge() : new RulithMcp({ url: process.env.RULITH_DSH_MCP_URL ?? 'https://api.rulith.ai/mcp', token: process.env.RULITH_TOKEN,
     identity(agentId) { process.send?.({ protocol: 'rulith-dsh', type: 'identity', agentId }); } });
   ctx.effect(() => () => bridge.close());
   await bridge.initialize();
   const listed = await bridge.list();
   if (!surfaceAccepted(listed)) throw new Error('MCP tool surface refused');
+  const channel = new BoardChannel({ invoke: (name, args) => bridge.call(name, args) });
+  ctx.effect(() => () => channel.close());
   for (const tool of listed.tools) {
     const dispose = ctx.tools.register({ name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
-      output: { schema: {}, render(_args, value) { return [{ type: 'text', text: JSON.stringify(value) }]; } },
-      async execute(args) {
-        const result = await bridge.call(tool.name, args);
+      output: { schema: {}, render: renderChannelResult },
+      async execute(args, exec = {}) {
+        const result = await channel.call(tool.name, args, { signal: exec.signal });
         if (result.isError) throw new Error(JSON.stringify(result));
         return result;
       },
@@ -129,7 +131,7 @@ export async function apply(ctx) {
     ctx.effect(() => dispose);
   }
   // Readiness is a real Cordis service, so gate/runner wait for tool registration.
-  ctx.provide('rulithBridge', bridge);
+  ctx.provide('rulithBridge', channel);
 }
 function ipcBridge() {
   let id = 0; const pending = new Map();

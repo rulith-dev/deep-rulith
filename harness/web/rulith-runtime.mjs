@@ -12,7 +12,11 @@ import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installThinkingHistory } from './thinking-history.mjs';
 import { installProjectContext, readSourceBindings, resolveProject } from './project-source.mjs';
-import { ShadowReviewer, ShadowTriggers, decodeBoardResult, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
+import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
+
+import { BoardChannel, readToolKinds, renderChannelResult } from '../board-channel.mjs';
+import { handOf } from '../subagents.mjs';
+export { awaitOutcome } from '../board-channel.mjs';
 
 export const name = 'rulith-runtime';
 export const inject = ['tools', 'webServer', 'llm'];
@@ -32,37 +36,6 @@ export function selectedAgent(home, agentName) {
   const local = readJson(path.join(rows[0].directory, 'local.json'));
   const token = local?.agent?.env?.RULITH_TOKEN;
   return token ? { instanceId: rows[0].id, agentId: rows[0].agentId, agentName: rows[0].agentName, token } : null;
-}
-
-const UNRESOLVED = new Set(['running', 'waiting_for_decision', 'needs_person']);
-const parsed = (result) => { try { return JSON.parse((result.content ?? []).map((part) => part.text ?? '').join('')); } catch { return null; } };
-/** This call's own unresolved entry on a strip: the one entry of its tool and seat that is still open (each seat holds one). */
-const openEntryOf = (strip, tool, seat) => {
-  const open = (Array.isArray(strip) ? strip : []).filter((e) => e && e.tool === tool && (e.seat ?? 'main') === seat && UNRESOLVED.has(e.state));
-  return open.length === 1 ? open[0] : undefined;
-};
-/**
- * A write the authority holds past its bound comes back `running`; the Worker keeps executing. Instead of handing the
- * model `running` (and the model spending steps re-reading the Board), wait here and read the strip until this call's
- * own entry settles, then answer with that read: it carries the outcome in full the first time it is shown. Waiting
- * for a person's decision is not waited on. The wait ends at RULITH_DSH_WAIT_SECONDS if set (0 or unset: until settled).
- */
-export async function awaitOutcome(bridge, tool, result, { seat = bridge.seat ?? 'main', pollMs = 2_000, waitSeconds = Number(process.env.RULITH_DSH_WAIT_SECONDS || 0) } = {}) {
-  const first = parsed(result);
-  const own = openEntryOf(first?.operations, tool, seat);
-  if (!own || own.state !== 'running') return result;
-  const deadline = waitSeconds > 0 ? Date.now() + waitSeconds * 1000 : Infinity;
-  let last = result;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-    const look = await bridge.call('Get', {});
-    if (look.isError) return last;
-    last = look;
-    const strip = parsed(look)?.operations;
-    const entry = (Array.isArray(strip) ? strip : []).find((e) => e && e.tool === own.tool && (e.seat ?? 'main') === seat && e.label === own.label && e.at === own.at);
-    if (!entry || entry.state !== 'running') return look;
-  }
-  return last;
 }
 
 export async function apply(ctx, config = {}) {
@@ -119,110 +92,69 @@ export async function apply(ctx, config = {}) {
   const drop = () => {
     if (!current) return;
     for (const dispose of current.disposers) dispose();
-    current.shadow?.close();
+    current.channel.close();
     current.bridge.close();
-    for (const bridge of current.seats.values()) bridge.close();
     current = null;
   };
-  const connect = async (token, seat = 'main') => {
-    const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, seat, identity() {} });
-    await bridge.initialize();
-    const listed = await bridge.list();
-    if (!surfaceAccepted(listed)) throw new Error('MCP tool surface refused');
-    return { bridge, listed };
+  const connect = async (token) => {
+    const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, identity() {} });
+    try {
+      await bridge.initialize();
+      const listed = await bridge.list();
+      if (!surfaceAccepted(listed)) throw new Error('MCP tool surface refused');
+      return { bridge, listed };
+    } catch (error) { bridge.close(); throw error; }
   };
-  // The live connection for the current credential and one seat: a closed one is replaced (one attempt at a time per seat).
-  // 席位（C1，D-1008h）：每个席位一条独立的 MCP 会话（Gateway 按席位各给一条会话线与执行槽）；main 是缺省。
-  const reconnecting = new Map();
-  const liveBridge = async (seat = 'main') => {
+  // One replacement attempt for the one main session; queued requests keep their order across reconnect.
+  let reconnecting = null;
+  const liveBridge = async () => {
     if (!current) throw new Error('Rulith is not attached: choose an Agent with the Deep Rulith entry.');
     const holder = current;
-    const existing = seat === 'main' ? holder.bridge : holder.seats.get(seat);
-    if (existing && !existing.closed) return existing;
-    if (!reconnecting.has(seat)) reconnecting.set(seat, connect(holder.token, seat).then(({ bridge }) => {
-      if (seat === 'main') {
-        holder.bridge = bridge;
-        report('attached', { agentName: holder.agentName, tools: [...TOOLS], reconnectedAt: new Date().toISOString() });
-      } else holder.seats.set(seat, bridge);
+    if (!holder.bridge.closed) return holder.bridge;
+    if (!reconnecting) reconnecting = connect(holder.token).then(({ bridge }) => {
+      if (current !== holder) { bridge.close(); throw new Error('Rulith Agent detached'); }
+      holder.bridge = bridge;
+      report('attached', { agentName: holder.agentName, tools: [...TOOLS], reconnectedAt: new Date().toISOString() });
       return bridge;
-    }).finally(() => { reconnecting.delete(seat); }));
-    return reconnecting.get(seat);
-  };
-  // A conversation's seat is its dsh agent preset: `rulith-seat-<name>` is the seat <name>; every other preset is main.
-  const seatOf = (exec) => {
-    let preset;
-    try { preset = ctx.get('sessionProjections')?.stateOf?.(exec?.agent?.session, 'agentPreset'); } catch { preset = undefined; }
-    return /^rulith-seat-([a-z][a-z0-9_-]{0,31})$/.exec(typeof preset === 'string' ? preset : '')?.[1] ?? 'main';
+    }).finally(() => { reconnecting = null; });
+    return reconnecting;
   };
   const TRANSIENT = /^(MCP transport failed|MCP request refused|MCP response unreadable|MCP connection closed|connection_replaced)$/;
-  const READS = new Set(['Get']);
-  const invoke = async (name, args, seat = 'main') => {
-    // Reaching Rulith fails before anything is sent: that error is reported as it is.
-    const bridge = await liveBridge(seat);
+  const request = async (holder, name, args) => {
+    if (current !== holder) throw new Error('Rulith Agent detached');
+    const bridge = await liveBridge();
     try { return await bridge.call(name, args); }
     catch (error) {
       if (!TRANSIENT.test(String(error?.message ?? ''))) throw error;
-      // A read changes nothing, so it is asked once more on a fresh connection. A write's outcome is unknown: it is
-      // never repeated here, and the model is told how to learn it.
-      if (READS.has(name)) return (await liveBridge(seat)).call(name, args);
+      if (name === 'Get') return (await liveBridge()).call(name, args);
       throw new Error('The connection to Rulith was interrupted during this call; its outcome is unknown. Do not repeat it: Get shows its outcome in the operations strip.');
     }
   };
+  const invoke = (name, args, options) => {
+    if (!current) throw new Error('Rulith is not attached: choose an Agent with the Deep Rulith entry.');
+    return current.channel.call(name, args, options);
+  };
   const attach = async (agent) => {
     const { bridge, listed } = await connect(agent.token);
-    const holder = { token: agent.token, agentName: agent.agentName, bridge, seats: new Map(), disposers: [], shadow: null };
-    const triggers = new ShadowTriggers();
-    const calls = new Map();
-    const shadowBridge = async () => {
-      if (current !== holder) throw new Error('shadow Agent detached');
-      const connection = await liveBridge('shadow');
-      if (current !== holder) throw new Error('shadow Agent detached');
-      return connection;
-    };
-    holder.shadow = new ShadowReviewer({ enabled: shadowSettings.enabled !== false, log: shadowLog,
-      chat: (route, user, signal) => reviewWithModel(ctx.llm, route, user, signal),
-      async readBoard(beat) {
-        // All supplemental reads use shadow's lane; no read is queued ahead of a main model call.
-        let connection;
-        try { connection = await shadowBridge(); }
-        catch (error) {
-          const reason = String(error?.message ?? error).slice(0, 300);
-          console.error(`[shadow] seat session unavailable (${reason}); reviewing the delivered Board view only`);
-          if (!beat.view || beat.view.unavailable) throw new Error('shadow Board view unavailable');
-          return { views: [beat.view, { supplementalReadUnavailable: true }], writeUnavailable: `shadow seat session unavailable: ${reason} (check seat shadow in Console)` };
-        }
-        const discovery = await connection.call('Get', {});
-        if (discovery.isError || decodeBoardResult(discovery)?.accepted !== true || !decodeBoardResult(discovery)?.view) throw new Error('shadow default Board read refused');
-        const views = [decodeBoardResult(discovery).view];
-        if (beat.focusedGoals.length) {
-          const nodes = await connection.call('Get', { include: ['nodes'], selector: { goals: beat.focusedGoals } });
-          if (nodes.isError || decodeBoardResult(nodes)?.accepted !== true || !decodeBoardResult(nodes)?.view) throw new Error('shadow focused Board read refused');
-          views.push(decodeBoardResult(nodes).view);
-        }
-        return { views };
-      },
-      write: async (args) => (await shadowBridge()).call('Set', args),
-    });
-    const disposers = listed.tools.map((tool) => ctx.tools.register({
+    const holder = { token: agent.token, agentName: agent.agentName, bridge, disposers: [] };
+    const shadow = new ShadowReviewer({ enabled: shadowSettings.enabled !== false, log: shadowLog,
+      chat: (route, user, signal) => reviewWithModel(ctx.llm, route, user, signal) });
+    holder.channel = new BoardChannel({ shadow, invoke: (name, args) => request(holder, name, args),
+      focusedGoals: () => holder.bridge.focusedGoals,
+      toolKinds: () => {
+        // The selected local Worker's explicit manifest kinds; never infer read from an Action's name or args.
+        const row = (readJson(path.join(home, 'registry.json'))?.instances ?? []).find((entry) => entry.id === agent.instanceId);
+        const env = row ? readJson(path.join(row.directory, 'local.json'))?.worker?.env ?? {} : {};
+        return readToolKinds(env.RULITH_TOOLS_FILE);
+      } });
+    holder.disposers = listed.tools.map((tool) => ctx.tools.register({
       name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
-      output: { schema: {}, render(_args, value) { return [{ type: 'text', text: JSON.stringify(value) }]; } },
-      finalizeContent(exec, result) {
-        if (current !== holder) return;
-        const notes = holder.shadow.takeNotes(exec.agent?.session?.id);
-        return notes.length ? [...result.content, { type: 'text', text: '\n' + notes.join('\n') }] : undefined;
-      },
+      output: { schema: {}, render: renderChannelResult },
       async execute(args, exec) {
-        const seat = seatOf(exec);
-        const session = exec.agent?.session?.id;
-        if (tool.name === 'Set') holder.shadow.observeSet(session, args);
-        const call = (name, input) => invoke(name, input, seat);
-        const result = await call(tool.name, args);
-        const outcome = result.isError ? result : await awaitOutcome({ call }, tool.name, result, { seat });
-        const mainBridge = seat === 'main' ? holder.bridge : holder.seats.get(seat);
-        // Read only the current request's routing config, never its messages or reasoning.
+        if (current !== holder) throw new Error('Rulith Agent detached');
+        // Routing only: no hand's conversation or reasoning reaches the shadow.
         const mainRoute = exec.agent?.session?.requestHeader?.()?.config ?? exec.agent?.options ?? {};
-        calls.set(exec.token, { session, seat, outcome, origin: decodeBoardResult(result), view: decodeBoardResult(outcome)?.view,
-          focusedGoals: [...(mainBridge?.focusedGoals ?? [])],
+        const outcome = await holder.channel.call(tool.name, args, { hand: handOf(exec.agent), signal: exec.signal,
           route: { provider: shadowSettings.provider ?? mainRoute.provider ?? 'rulith-model',
             model: shadowSettings.model ?? mainRoute.model ?? process.env.RULITH_DSH_MODEL,
             maxTokens: shadowSettings.maxTokens ?? 8000 }, timeoutMs: shadowSettings.timeoutMs ?? 120_000 });
@@ -230,14 +162,6 @@ export async function apply(ctx, config = {}) {
         return outcome;
       },
     }));
-    disposers.push(ctx.on('tools/result', (exec) => {
-      const beat = calls.get(exec.token); calls.delete(exec.token);
-      if (!beat || current !== holder) return;
-      // dsh has finalized/materialized the result. Schedule review only after the result returns to its loop.
-      // A refused tool can still deliver an earlier operation's settled outcome in its strip.
-      for (const next of triggers.observe(exec.name, beat.outcome, beat)) holder.shadow.beat(next);
-    }));
-    holder.disposers = disposers;
     current = holder;
   };
   let busy = false;

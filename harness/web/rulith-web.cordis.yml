@@ -42,19 +42,38 @@
 - id: plan-mode
   disabled: true
 - id: subagent
-  disabled: true
+  disabled: false
+  config:
+    maxDepth: 1
+    maxActiveSubagents: 4
 - id: subagent-spawn-in-process
-  disabled: true
+  disabled: false
 - id: subagent-fork-in-process
-  disabled: true
+  disabled: false
 - id: tool-subagent-control
-  disabled: true
+  disabled: false
 - id: tool-subagent-list-agents
   disabled: true
 - id: tool-subagent
-  disabled: true
+  disabled: false
+  config:
+    provider: spawn
+    toolName: subagent
+    maxDepth: 1
+    enableRunInBackground: true
+    backgroundMode: continuable
+    toolFilter:
+      allow: [Get, Set, Execute]
 - id: tool-subagent-fork
-  disabled: true
+  disabled: false
+  config:
+    provider: fork
+    toolName: subagent_fork
+    maxDepth: 1
+    enableRunInBackground: true
+    backgroundMode: continuable
+    toolFilter:
+      allow: [Get, Set, Execute]
 - id: ptc-runtime
   disabled: true
 - id: workflow-ptc
