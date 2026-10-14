@@ -6,7 +6,15 @@ import { createHash } from 'node:crypto';
 // 把对话里 Rulith 的结果改写成两种形态（只改模型看到的那份；界面上的对话原文不变）：
 //   - 最新一份：整块板，每行一项；比上一份板新增的行前标 `+`，消失的行以 `-` 列出；
 //   - 更早的：只留这一步的变化（`+`／`-` 行）。
-// 结果本身（accepted、result、teaching、errorCode 等）每一份都原样保留，所以失败一步的教学不会被压掉。
+// 结果本身（accepted、result、teaching、errorCode 等）在最近 KEEP_RESULTS 份工具结果里原样保留，所以刚失败一步的教学不会被压掉；
+// 更早的结果见下面的“旧结果减负”。
+//
+// 旧结果减负（2026-10-14，所有者：只有 Board 上的才算数，对话记录可以丢；两次压缩后上下文仍有 ~180K/262K，近几份 Rulith
+// 结果每份 10～23 万字符）：比最近 KEEP_RESULTS 份工具结果更早的 Rulith 结果，第一行超过 CLEAR_FIRST_LINE 个字符时换成
+// 一行仍可解析的紧凑 JSON（只留 accepted、errorCode、tool、requestExecuted、result.action/ok/status，并写明清掉了多少字符）；
+// 其中超过 LONG_LINE 的 `+` 行与 `-` 行一样只显示短身份。最新一份整块板永远原样。
+// 旧工具调用的参数（例如写文件的整段文本）不在这里清：dsh 拒绝替换 assistant/message（它内嵌模型原始输出流，
+// 不能带 sourceEventSeqs；见 tool-history.mjs），插件自定义事件类型又会让会话重启后无法读回。
 //
 // 10-09 模型的反馈（项目内容，事后报告）：表头说“整块板”，而视图自己写着 rootScope.lossy 与 dropped，两者打架——这里
 // 给的其实是“Rulith 这次返回的整个视图”，省略了什么由视图自己说；未变的行只靠两个空格，不醒目，改标 `=`；Get
@@ -19,6 +27,8 @@ import { createHash } from 'node:crypto';
 //      上一份“最新”降为变化，前缀其余部分逐字不变，模型服务的前缀缓存照常命中。
 //   3. 这不是第二份真相：板的真相仍在 Rulith，这里只是把它沿时间拆成“历次变化 + 最新全量”给模型看。
 //   4. 读不懂的结果（传输错误、Get artifact 等不带板的结果）原样不动。
+//   5. 减负只改显示，不改比较：短身份就是该行比较用的身份（identity），由改写后的文本重算，每一份的 +／- 与不减负时
+//      完全相同；已经减负的不再改（紧凑行带 cleared，短身份按原样就是它自己的身份），第二遍什么也不变。
 
 import { projectToolCall } from '../tool-history.mjs';
 import { NOTE_PREFIX } from './shadow-reviewer.mjs';
@@ -123,10 +133,51 @@ export function renderFull(first, curr, prev) {
   return [first, prev === null ? FULL_FIRST : FULL_HEAD, ...rows.map((row) => `${row.mark} ${row.line}`)].join('\n');
 }
 
-/** 历史一份：结果行 + 只有变化的行。 */
-export function renderDelta(first, curr, prev) {
+/**
+ * 历史一份：结果行 + 只有变化的行。old 为真（比最近 KEEP_RESULTS 份工具结果更早）时减负：结果行压成紧凑 JSON，
+ * 超过 LONG_LINE 的 `+` 行显示它的身份（identity；长行即短身份），与 `-` 行一样，重算时得到同一个身份。
+ */
+export function renderDelta(first, curr, prev, old = false) {
   const changed = mark(prev, curr).filter((row) => row.mark !== '=');
-  return [first, changed.length > 0 ? DELTA_HEAD : DELTA_NONE, ...changed.map((row) => `${row.mark} ${row.line}`)].join('\n');
+  const shown = (row) => (old && row.mark === '+' && row.line.length > LONG_LINE ? identity(row.line) : row.line);
+  return [old ? clearFirst(first) : first, changed.length > 0 ? DELTA_HEAD : DELTA_NONE,
+    ...changed.map((row) => `${row.mark} ${shown(row)}`)].join('\n');
+}
+
+/** 最近这么多份工具结果（不论是否带板）原样保留；更早的减负。 */
+export const KEEP_RESULTS = 6;
+/** 旧结果的第一行（不含板的结果 JSON）超过这么多字符就压成紧凑 JSON。 */
+export const CLEAR_FIRST_LINE = 1500;
+/** 紧凑 JSON 里保留的字段：短的才留（按 JSON 计不超过这么多字符），长的照样清掉。 */
+const KEPT_FIELD = 200;
+const clearedNote = (n) => `${n} characters of this earlier result were cleared to save context; the Board holds the state`;
+
+/**
+ * 旧结果的第一行：太长时换成一行仍可解析的紧凑 JSON，保留 accepted、errorCode、tool、requestExecuted 与
+ * result.action／ok／status（有且短时），另加 cleared 写明清掉了多少字符。dsh 的 `Error: ` 前缀照留。
+ * 读不懂的、已经带 cleared 的，原样返回（所以第二遍不变）。
+ */
+export function clearFirst(first) {
+  const isError = first.startsWith(ERROR_PREFIX);
+  const body = isError ? first.slice(ERROR_PREFIX.length) : first;
+  if (body.length <= CLEAR_FIRST_LINE) return first;
+  let rest;
+  try { rest = JSON.parse(body); } catch { return first; }
+  if (!rest || typeof rest !== 'object' || Array.isArray(rest) || Object.hasOwn(rest, 'cleared')) return first;
+  const pick = (from, keys) => {
+    const out = {};
+    for (const key of keys) {
+      if (Object.hasOwn(from, key) && from[key] !== undefined && JSON.stringify(from[key]).length <= KEPT_FIELD) out[key] = from[key];
+    }
+    return out;
+  };
+  const kept = pick(rest, ['accepted', 'errorCode', 'tool', 'requestExecuted']);
+  if (rest.result && typeof rest.result === 'object' && !Array.isArray(rest.result)) {
+    const result = pick(rest.result, ['action', 'ok', 'status']);
+    if (Object.keys(result).length > 0) kept.result = result;
+  }
+  kept.cleared = clearedNote(body.length);
+  return (isError ? ERROR_PREFIX : '') + JSON.stringify(kept);
 }
 
 /**
@@ -178,7 +229,9 @@ const acceptedBatch = (item) => {
   try { return JSON.parse(first.replace(/^Error: /, '')).accepted === true; } catch { return false; }
 };
 
-export function plan(items) {
+// 每一份之后还有几份工具结果：rewriteSession 按对话里全部工具结果数好放在 item.later；没有时（直接调用 plan）
+// 按 items 里排在它后面的份数。keepResults 只为测试比较“减负与不减负”而可调。
+export function plan(items, { keepResults = KEEP_RESULTS } = {}) {
   let prev = null; // 上一份板的多重集（行 → 次数）
   const lineOf = new Map(); // 身份 → 最近一次显示的原行（长行的身份是短摘要，重算时要还原出原行）
   let sinceWrite = 0;
@@ -210,7 +263,8 @@ export function plan(items) {
     }
     const note = last && sinceWrite >= WRITE_NOTE_AFTER ? `\n${writeNote(sinceWrite)}` : '';
     const advisory = item.notes?.length ? '\n' + item.notes.join('\n') : '';
-    const wanted = (last ? renderFull(first, curr, prev) + note : renderDelta(first, curr, prev)) + advisory;
+    const old = (item.later ?? items.length - 1 - index) >= keepResults;
+    const wanted = (last ? renderFull(first, curr, prev) + note : renderDelta(first, curr, prev, old)) + advisory;
     for (const line of curr) lineOf.set(identity(line), line);
     prev = countLines(curr.map(identity));
     return wanted === item.text + advisory ? null : wanted;
@@ -226,6 +280,7 @@ const textOf = (message) => (Array.isArray(message?.content) ? message.content.m
 export function rewriteSession(session) {
   const found = [];
   const toolOf = new Map(); // 调用 ID → 工具名，取自模型消息里的工具调用块
+  let results = 0; // 对话里的工具结果（带板与否都算），用来判断哪些结果已在最近 KEEP_RESULTS 份之外
   for (const seq of [...session.surface.nodes]) {
     const event = session.eventAt(seq);
     if (event?.type === 'assistant/message') {
@@ -233,12 +288,14 @@ export function rewriteSession(session) {
       continue;
     }
     if (event?.type !== 'tool/result') continue;
+    results += 1;
     const message = session.deriveEventMessage(event);
     const item = classify(textOf(message));
     if (item === null) continue;
     item.tool = toolOf.get(message.toolCallId);
-    found.push({ seq, event, message, item });
+    found.push({ seq, event, message, item, ordinal: results });
   }
+  for (const entry of found) entry.item.later = results - entry.ordinal;
   const wanted = plan(found.map((entry) => entry.item));
   let rewritten = 0;
   found.forEach((entry, index) => {
