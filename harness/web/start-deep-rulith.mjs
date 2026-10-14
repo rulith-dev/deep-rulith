@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { contextEnv, contextLines, reviewerEnv, reviewerRequestExtra, writeReviewerEnv } from './launcher-settings.mjs';
+import { contextEnv, contextLines, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
 
 const settingsFile = process.env.DEEP_RULITH_SETTINGS || process.argv[2];
 if (!settingsFile) throw new Error('usage: node start-deep-rulith.mjs <deep-rulith.json> [dsh web flags]');
@@ -65,6 +65,22 @@ function writeReviewerRoute(YAML, doc) {
   const rows = YAML.isSeq(doc.contents) ? doc.contents.items : [];
   const row = (id) => rows.find((item) => YAML.isMap(item) && item.get('id') === id && !item.has('insert'));
   const chosen = row('agent-default-model');
+  const routeEnv = (providerName, modelId, extra) => {
+    const provider = row('llm-pi-ai')?.getIn(['config', 'providers', providerName]);
+    const baseURL = YAML.isMap(provider) ? String(provider.get('baseURL') ?? '').replace(/\/+$/, '') : '';
+    const keyEnv = YAML.isMap(provider) ? provider.get('apiKeyEnv') : undefined;
+    let key = providerName === 'rulith-model' ? model?.key ?? '' : (keyEnv ? process.env[keyEnv] ?? '' : '');
+    if (!key && keyEnv) {
+      const credentials = path.join(s.dshHome, '.credentials.yaml');
+      if (fs.existsSync(credentials)) key = String(YAML.parse(fs.readFileSync(credentials, 'utf8'))?.refs?.[keyEnv] ?? '');
+    }
+    return baseURL && modelId ? reviewerEnv({ baseURL, modelId, key, extra }) : null;
+  };
+  const overrides = reviewerRoutes(s).map((r) => {
+    const env = routeEnv(r.provider, r.model, r.extra);
+    if (!env) throw new Error(`Deep Rulith: reviewerRoutes provider ${r.provider} has no base URL in the dsh profile`);
+    return { agentPrefix: r.agentPrefix, env };
+  });
   const providerName = chosen?.getIn(['config', 'provider']) ?? 'rulith-model';
   const modelId = chosen?.getIn(['config', 'model']) ?? env.RULITH_DSH_MODEL;
   const provider = row('llm-pi-ai')?.getIn(['config', 'providers', providerName]);
@@ -78,7 +94,7 @@ function writeReviewerRoute(YAML, doc) {
   if (!baseURL || !modelId) return;
   // The reviewer's output cap (16000), timeout (300000 ms, the Gateway's maximum) and request extra (written when the settings
   // have reviewerThinking or reviewerRequestExtra, removed when they have neither) are explained in launcher-settings.mjs.
-  writeReviewerEnv(s.managerHome, reviewerEnv({ baseURL, modelId, key, extra: reviewerExtra }));
+  writeReviewerEnv(s.managerHome, reviewerEnv({ baseURL, modelId, key, extra: reviewerExtra }), overrides);
 }
 
 const overlay = fileURLToPath(new URL('./rulith-web.cordis.yml', import.meta.url));

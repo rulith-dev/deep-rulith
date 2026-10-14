@@ -209,3 +209,23 @@ test("the platform reviewer's route in each enabled Worker's worker.env drops th
   assert.equal(writeReviewerEnv(home, want), 0, 'already written: nothing to do');
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+test('reviewerRoutes send instances of matching Agents to another reviewer route', async () => {
+  const { reviewerRoutes } = await import('../../harness/web/launcher-settings.mjs');
+  assert.deepEqual(reviewerRoutes({}), []);
+  assert.throws(() => reviewerRoutes({ reviewerRoutes: [{ agentPrefix: 'x' }] }), /agentPrefix, provider and model/);
+  assert.deepEqual(reviewerRoutes({ reviewerRoutes: [{ agentPrefix: 'bench-h-', provider: 'p', model: 'm', reviewerThinking: true }] }),
+    [{ agentPrefix: 'bench-h-', provider: 'p', model: 'm', extra: JSON.stringify({ chat_template_kwargs: { enable_thinking: true } }) }]);
+  const home = temp();
+  for (const [id, name] of [['inst-a', 'bench-h-one'], ['inst-b', 'bench-q-two']]) {
+    fs.mkdirSync(path.join(home, 'instances', id), { recursive: true });
+    fs.writeFileSync(path.join(home, 'instances', id, 'local.json'), JSON.stringify({ worker: { enabled: true, env: {} } }));
+  }
+  fs.writeFileSync(path.join(home, 'registry.json'), JSON.stringify({ instances: [{ id: 'inst-a', name: 'bench-h-one', agentName: 'bench-h-one' }, { id: 'inst-b', name: 'bench-q-two', agentName: 'bench-q-two' }] }));
+  const def = reviewerEnv({ baseURL: 'http://local/v1', modelId: 'qwen', key: 'k1' });
+  const alt = reviewerEnv({ baseURL: 'https://api.example/v1', modelId: 'ds', key: 'k2' });
+  assert.equal(writeReviewerEnv(home, def, [{ agentPrefix: 'bench-h-', env: alt }]), 2);
+  const read = (id) => JSON.parse(fs.readFileSync(path.join(home, 'instances', id, 'local.json'), 'utf8')).worker.env;
+  assert.equal(read('inst-a').RULITH_REVIEWER_MODEL, 'ds');
+  assert.equal(read('inst-b').RULITH_REVIEWER_MODEL, 'qwen');
+});

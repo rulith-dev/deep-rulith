@@ -82,14 +82,22 @@ export function reviewerRequestExtra(settings = {}) {
  * 把这几项写进 managerHome 下每个启用了 Worker 的实例的 local.json（worker.env），其余内容原样保留；已经一样的不写。
  * 值为 undefined 的项从 worker.env 删掉。先写临时文件再改名，权限 0600（含密钥）。返回写了几个实例。
  */
-export function writeReviewerEnv(managerHome, want) {
+export function writeReviewerEnv(managerHome, wantDefault, overrides = []) {
   const instances = path.join(managerHome, 'instances');
+  // 按 Agent 名前缀改用别的审查员路线（reviewerRoutes）：实例 id 到 Agent 名的对应取自管理器的 registry.json。
+  const names = new Map();
+  const registry = path.join(managerHome, 'registry.json');
+  if (overrides.length > 0 && fs.existsSync(registry)) {
+    for (const row of JSON.parse(fs.readFileSync(registry, 'utf8')).instances ?? []) names.set(row.id, row.agentName ?? row.name ?? '');
+  }
   let written = 0;
   for (const name of fs.existsSync(instances) ? fs.readdirSync(instances) : []) {
     const file = path.join(instances, name, 'local.json');
     if (!fs.existsSync(file)) continue;
     const local = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!local.worker?.enabled) continue;
+    const agentName = names.get(name) ?? '';
+    const want = overrides.find((o) => agentName.startsWith(o.agentPrefix))?.env ?? wantDefault;
     const env = local.worker.env ?? {};
     if (Object.entries(want).every(([k, v]) => (v === undefined ? !Object.hasOwn(env, k) : env[k] === v))) continue;
     const next = { ...env };
@@ -103,4 +111,20 @@ export function writeReviewerEnv(managerHome, want) {
     written += 1;
   }
   return written;
+}
+
+/**
+ * deep-rulith.json 的 reviewerRoutes：[{ agentPrefix, provider, model, reviewerThinking?, reviewerRequestExtra? }]。
+ * Agent 名以 agentPrefix 开头的实例，审查员改走该提供商与模型（取 dsh 配置里同名提供商的地址与密钥来源），
+ * 附加字段按同一规则各自计算；其余实例仍走 agent-default-model。用于同一台机器上并行的不同实验组。
+ */
+export function reviewerRoutes(settings = {}) {
+  const routes = settings.reviewerRoutes ?? [];
+  if (!Array.isArray(routes)) throw new Error('Deep Rulith: reviewerRoutes in the settings must be a list');
+  return routes.map((r) => {
+    if (!r || typeof r.agentPrefix !== 'string' || !r.agentPrefix || typeof r.provider !== 'string' || typeof r.model !== 'string') {
+      throw new Error('Deep Rulith: each reviewerRoutes entry needs agentPrefix, provider and model');
+    }
+    return { agentPrefix: r.agentPrefix, provider: r.provider, model: r.model, extra: reviewerRequestExtra(r) };
+  });
 }
