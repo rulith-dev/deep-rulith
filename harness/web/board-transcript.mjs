@@ -15,10 +15,13 @@ import { createHash } from 'node:crypto';
 // eng.patch_file／run／test）给默认视图（position、goals、actions、taskStatus、goalTypes，约 4.5K 字符），只读的 Execute
 // （eng.read 等）给按目标的视图（再加 facts、findings、goalNodes、total、rootScope、gaps，约 16.5K 字符）。以前与上一份
 // 视图整体比较，每次切换都把全部事实列成“- 消失”，下次又列成“+ 新增”：既费上下文，也是错的——事实没有消失，只是这份视图
-// 没带。现在：一个顶层段（视图的顶层键，另加 operations）在这份视图里没有，就是“没带”，不是“消失”；每一段与“最近一份带
-// 这一段的视图”比较，只比两边都有的段，没带的段的行永远不列成 `-`；最新一份整视图的 +／-／= 也这样标。这份视图没带、
-// 而本对话更早的视图带过的段，在表头下用一行列出（ABSENT_PREFIX）。新的比较方式用新的表头（FULL_HEAD、DELTA_HEAD、
-// DELTA_NONE）；10-14 之前排好的变化（旧表头）按当时的方式（与上一份整体比较）读回，原样不动。
+// 没带。现在：由 include 决定的组（nodes 组：facts、findings、goalNodes、total、rootScope 及 truncated；gaps 组：gaps 及
+// gapsTruncated、gapsTotal；见下面的 INCLUDE_GROUPS）整组不在这份视图里，就是“没带”，不是“消失”：这样的组与“最近一份带
+// 这一组的视图”比较，没带时它的行永远不列成 `-`；其余的键照常与上一份视图比较，不见了就是 `-`（审查 e83bd1d 的 P2-1：
+// 截断标志、没有动作时的 actions、空焦点时的 taskStatus、{unavailable:true} 都会在同一种视图里出现或消失，不能当成“没带”）。
+// 最新一份整视图的 +／-／= 也这样标。这份视图没带、而本对话更早的视图带过的组，在表头下用一行列出它们的键（ABSENT_PREFIX）。
+// 新的比较方式用新的表头（FULL_HEAD、DELTA_HEAD、DELTA_NONE）；10-14 之前排好的变化（旧表头）按当时的方式（与上一份整体
+// 比较）读回，原样不动。
 //
 // 结果怎样读（2026-10-14，所有者：工具结果要读得自然，不要满屏反斜杠）：板以外的部分（结果头）是一行紧凑 JSON。
 // Worker 的输出由平台作为字符串带回，原样就是 JSON 里套着转义的 JSON；这里把“本身是一行 JSON（对象或数组）”的字符串解开，
@@ -58,8 +61,9 @@ import { createHash } from 'node:crypto';
 // 永远一致；重启或回放会话日志得到同一个边界、同样的字节。标记只认本文件的分类器认出的带板结果的最后一行。
 //
 // 不变式（中文写明，便于审计）：
-//   1. 每一段的变化相对的是“这个对话里最近一份带这一段的视图”；从第一份起把各步变化依次叠加，得到每一段最后一次出现时
-//      的样子，最新一份整视图就是这些段里它带了的那些。第一份没有更早的视图，它的每一行都标 `+`。
+//   1. include 决定的组的变化相对的是“这个对话里最近一份带这一组的视图”，其余键的变化相对的是上一份视图；从第一份起把
+//      各步变化依次叠加，得到每一组最后一次出现时的样子，最新一份整视图就是其中它带了的那些。第一份没有更早的视图，它的
+//      每一行都标 `+`。
 //   2. 改写只依据会话记录本身（对话、dsh 记下的用量、请求上下文与请求头；无内存状态），重启或回放后结果相同；已经排好的
 //      不再改。低于减负线时，每一步只把上一份“最新”降为变化，前缀其余部分逐字不变，模型服务的前缀缓存照常命中；
 //      一批减负改的是边界及之前尚未减负的结果，此后它们不再变。以前的决定不因对话变长而改动。
@@ -80,11 +84,11 @@ import { RELIEF_MARK, RELIEF_RATIO, contextLinesFor, shortenArguments } from './
 const ERROR_PREFIX = 'Error: ';
 const RULITH_TOOLS = new Set(['Get', 'Set', 'Execute']);
 
-// 表头。按段比较的（10-14 起）：
-export const FULL_HEAD = 'Board view now (the whole view Rulith returned; each section against the last view that had it: + new, - gone, = unchanged):';
+// 表头。按组比较的（10-14 起）：
+export const FULL_HEAD = 'Board view now (the whole view Rulith returned; + new, - gone, = unchanged; parts a view does not include keep their last state):';
 export const FULL_FIRST = 'Board view now (the whole view Rulith returned; your first view in this conversation, so every line is +):';
-export const DELTA_HEAD = 'Board view changes at this step (each section against the last view that had it: + new, - gone; unchanged lines left out; the latest result shows the whole view):';
-export const DELTA_NONE = 'Board view changes at this step: none (each section against the last view that had it; the latest result shows the whole view).';
+export const DELTA_HEAD = 'Board view changes at this step (+ new, - gone; unchanged lines left out; parts a view does not include keep their last state; the latest result shows the whole view):';
+export const DELTA_NONE = 'Board view changes at this step: none (parts a view does not include keep their last state; the latest result shows the whole view).';
 // 这份视图没带、而更早的视图带过的段（表头下一行）。
 export const ABSENT_PREFIX = 'Not in this view (read with Get to see them): ';
 // 与上一份视图整体比较的旧表头（10-09～10-14，以及 10-09 之前的写法）：照旧认得，排好的原样不动。
@@ -415,8 +419,22 @@ const acceptedBatch = (item) => {
   try { return JSON.parse(item.first.split('\n', 1)[0].replace(/^Error: /, '')).accepted === true; } catch { return false; }
 };
 
-/** 视图里带了哪些顶层段。 */
-const sectionsOf = (lines) => new Set(lines.map(topSection));
+// 由 include 决定带不带的组（交互附件 §3.2：selector.goals 加 include 的 nodes 与 gaps）：只有这样的组整组不在时，才算
+// 这份视图“没带”它。伴随的标志属于它的组（truncated 随 nodes 组；gapsTruncated／gapsTotal 随 gaps）。其余键（position、
+// goals、actions、taskStatus、goalTypes、unavailable 等）在同一种视图里也会按内容出现或消失（超过上限才有的截断标志、
+// 没有动作时省略的 actions、焦点为空时没有的 taskStatus、读不到局面时的 {unavailable:true}），所以照常与上一份视图比较：
+// 不见了就是 `-`。§3.2 里 taskStatus 也可由 include 选择，但它在焦点为空时同样不出现，两者分不开，按所有者 2026-10-14
+// 的决定照常比较。
+const INCLUDE_GROUPS = [
+  ['nodes', ['facts', 'findings', 'goalNodes', 'total', 'rootScope', 'truncated']],
+  ['gaps', ['gaps', 'gapsTruncated', 'gapsTotal']],
+];
+const GROUP_OF = new Map(INCLUDE_GROUPS.flatMap(([group, keys]) => keys.map((key) => [key, group])));
+const COMPANIONS = new Set(['truncated', 'gapsTruncated', 'gapsTotal']);
+const ALWAYS = ''; // 其余的键：每份视图都算带了这一组
+const groupOf = (line) => GROUP_OF.get(topSection(line)) ?? ALWAYS;
+/** 视图里带了哪些组（ALWAYS 总在）。 */
+const groupsOf = (lines) => new Set([ALWAYS, ...lines.map(groupOf)]);
 
 /** 把变化行叠加到 base（身份 → 次数）上，得到这份视图的身份。 */
 function apply(base, rows) {
@@ -432,23 +450,26 @@ function apply(base, rows) {
   return expand(next);
 }
 
-/** known 里这些段的身份多重集（比较的基准）。 */
-function baseOf(known, sections) {
+/** known 里这些组的身份多重集（比较的基准）。 */
+function baseOf(known, groups) {
   const base = new Map();
-  for (const [name, lines] of known) if (sections.has(name)) for (const [key, n] of lines) base.set(key, n);
+  for (const [group, entry] of known) if (groups.has(group)) for (const [key, n] of entry.ids) base.set(key, n);
   return base;
 }
 
+/** 这份视图没带、而更早的视图带过的组，以各组最后一次出现时的键列出（伴随标志不列）；组按第一次出现的顺序。 */
+const absentKeys = (known, groups) => [...known].filter(([group]) => !groups.has(group)).flatMap(([, entry]) => entry.keys);
+
 /**
- * 一份结果所带视图的行：原样的取板行，整视图取它的行，变化由基准叠加——新表头的按段（最近一份带这一段的视图；
- * 表头下列出的没带的段除外），旧表头的按上一份整个视图。
+ * 一份结果所带视图的行：原样的取板行，整视图取它的行，变化由基准叠加——新表头的按组（最近一份带这一组的视图；
+ * 表头下列出的没带的组除外），旧表头的按上一份整个视图。
  */
 function viewOf(item, previous, known) {
   if (item.kind === 'raw') return item.lines;
   if (item.kind === 'full') return item.rows.filter((row) => row.mark !== '-').map((row) => row.line);
   if (item.legacy) return apply(previous, item.rows);
-  const present = new Set([...known.keys(), ...item.rows.map((row) => topSection(row.line))]);
-  for (const name of item.absent) present.delete(name);
+  const present = new Set([ALWAYS, ...known.keys(), ...item.rows.map((row) => groupOf(row.line))]);
+  for (const key of item.absent) present.delete(GROUP_OF.get(key));
   return apply(baseOf(known, present), item.rows);
 }
 
@@ -467,7 +488,7 @@ function keep(item, old, marked) {
  */
 function render(items, boundary) {
   let previous = null; // 上一份视图（身份 → 次数）：旧表头的变化相对它
-  const known = new Map(); // 段 → 最近一份带这一段的视图里这一段的身份多重集；键按各段第一次出现的顺序
+  const known = new Map(); // 组 → 最近一份带这一组的视图里这一组的 { 身份多重集 ids, 顶层键 keys }；按各组第一次出现的顺序
   let sinceWrite = 0;
   for (const item of items) sinceWrite = acceptedBatch(item) ? 0 : sinceWrite + 1;
   return items.map((item, index) => {
@@ -477,9 +498,9 @@ function render(items, boundary) {
     const curr = viewOf(item, previous, known);
     let text;
     if (item.kind === 'raw' || (item.kind === 'full' && !last)) {
-      const present = sectionsOf(curr);
+      const present = groupsOf(curr);
       const base = baseOf(known, present);
-      const absent = [...known.keys()].filter((name) => !present.has(name));
+      const absent = absentKeys(known, present);
       const note = last && sinceWrite >= WRITE_NOTE_AFTER ? `\n${writeNote(sinceWrite)}` : '';
       text = (last ? renderFull(item.first, curr, known.size === 0 ? null : base, absent) + note : renderDelta(item.first, curr, base, old, absent))
         + (item.notes.length ? '\n' + item.notes.join('\n') : '') + (marked ? `\n${RELIEF_MARK}` : '');
@@ -488,7 +509,10 @@ function render(items, boundary) {
     }
     const ids = curr.map(identity);
     previous = countLines(ids);
-    for (const name of sectionsOf(ids)) known.set(name, countLines(ids.filter((id) => topSection(id) === name)));
+    for (const group of groupsOf(ids)) {
+      const mine = ids.filter((id) => groupOf(id) === group);
+      known.set(group, { ids: countLines(mine), keys: [...new Set(mine.map(topSection))].filter((key) => !COMPANIONS.has(key)) });
+    }
     return text;
   });
 }

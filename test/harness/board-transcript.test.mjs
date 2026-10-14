@@ -294,16 +294,18 @@ const scoped = (facts, extra = {}) => ({ accepted: true, ...extra,
 const plainView = (extra = {}) => ({ accepted: true, ...extra, view: { position: { writes: 'open' }, actions: [{ action: 'eng.read', status: 'ready' }], goalTypes: [] }, operations: [] });
 const ABSENT = 'Not in this view (read with Get to see them): ';
 
-test('alternating section sets give no false removals: an absent section is named, not listed as gone', () => {
+test('alternating section sets give no false removals: a part not included is named, not listed as gone', () => {
   const texts = plan([scoped(['a', 'b']), plainView(), scoped(['a', 'b']), plainView(), scoped(['a', 'b'])].map((answer) => raw(answer)).map(classify));
-  // The default view does not carry facts and gaps: no "- facts" lines, one line naming what it left out.
+  // The default view does not include facts and gaps: no "- facts" lines, one line naming what it left out.
   assert.deepEqual(texts[1].split('\n').slice(1), [DELTA_HEAD, `${ABSENT}facts, gaps`, '+ goalTypes: []']);
-  // The scoped view again: facts and gaps are compared with their last appearance, so nothing changed in them.
-  assert.deepEqual(texts[2].split('\n').slice(1), [DELTA_NONE, `${ABSENT}goalTypes`]);
-  assert.deepEqual(texts[3].split('\n').slice(1), [DELTA_NONE, `${ABSENT}facts, gaps`]);
-  // The latest whole view marks its sections against their last appearance as well.
-  assert.deepEqual(texts[4].split('\n').slice(1), [FULL_HEAD, `${ABSENT}goalTypes`, '= position.writes: "open"',
-    '= actions: {"action":"eng.read","status":"ready"}', '= facts: {"label":"a"}', '= facts: {"label":"b"}', '= gaps: {"gap":"g"}', '= operations: []']);
+  // The scoped view again: facts and gaps are compared with their last appearance, so nothing changed in them. goalTypes
+  // is not chosen by include, so its absence is a change like any other.
+  assert.deepEqual(texts[2].split('\n').slice(1), [DELTA_HEAD, '- goalTypes: []']);
+  assert.deepEqual(texts[3].split('\n').slice(1), [DELTA_HEAD, `${ABSENT}facts, gaps`, '+ goalTypes: []']);
+  // The latest whole view marks its parts against their last appearance as well.
+  assert.deepEqual(texts[4].split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"',
+    '= actions: {"action":"eng.read","status":"ready"}', '= facts: {"label":"a"}', '= facts: {"label":"b"}', '= gaps: {"gap":"g"}', '= operations: []',
+    '- goalTypes: []']);
   assert.ok(texts.every((text) => !/^- (facts|gaps): /m.test(text)));
   // Read back, nothing changes; laid out step by step, the result is the same.
   assert.ok(plan(texts.map(classify)).every((text) => text === null));
@@ -311,7 +313,7 @@ test('alternating section sets give no false removals: an absent section is name
 
 test('a section that reappears is compared with its last appearance', () => {
   const texts = plan([scoped(['a', 'b']), plainView(), scoped(['a', 'c']), raw(plainView())].map((answer) => (typeof answer === 'string' ? answer : raw(answer))).map(classify));
-  assert.deepEqual(texts[2].split('\n').slice(1), [DELTA_HEAD, `${ABSENT}goalTypes`, '+ facts: {"label":"c"}', '- facts: {"label":"b"}']);
+  assert.deepEqual(texts[2].split('\n').slice(1), [DELTA_HEAD, '+ facts: {"label":"c"}', '- facts: {"label":"b"}', '- goalTypes: []']);
   // A section that a later view empties is still compared: an empty list is a change, not an absence.
   const emptied = plan([scoped(['a']), scoped([])].map((answer) => raw(answer)).map(classify));
   assert.deepEqual(emptied[1].split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"', '= actions: {"action":"eng.read","status":"ready"}',
@@ -349,6 +351,43 @@ test('results laid out by whole-view comparison (10-09 to 10-14) are read that w
   const next = raw({ accepted: true, view: { position: { writes: 'open' }, facts: [{ label: 'a' }, { label: 'b' }] }, operations: [] });
   const texts = plan([...legacy, next].map(classify));
   assert.deepEqual(texts.slice(0, 3), [null, null, null]);
-  // The Board as the old layout implied it: facts [a], no goalTypes in the last view; goalTypes still known from before.
-  assert.deepEqual(texts[3].split('\n').slice(1), [FULL_HEAD, `${ABSENT}goalTypes`, '= position.writes: "open"', '= facts: {"label":"a"}', '+ facts: {"label":"b"}', '= operations: []']);
+  // The Board as the old layout implied it: facts [a] and no goalTypes in the last view.
+  assert.deepEqual(texts[3].split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"', '= facts: {"label":"a"}', '+ facts: {"label":"b"}', '= operations: []']);
+});
+
+// 审查 e83bd1d 的 P2-1：只有 include 决定的组（nodes 组、gaps 组）整组不在才算没带；其余键在同一种视图里出现或消失，照常比较。
+test('a key that disappears outside the include groups is a real removal', () => {
+  const read = (facts, extra = {}) => ({ accepted: true, view: { position: { writes: 'open' }, facts: facts.map((label) => ({ label })), total: facts.length, ...extra }, operations: [] });
+  const rows = (text) => text.split('\n').slice(1);
+  // A truncation flag of the nodes group that goes away while the group stays.
+  let texts = plan([read(['a', 'b'], { truncated: true }), read(['a'])].map((answer) => raw(answer)).map(classify));
+  assert.deepEqual(rows(texts[1]), [FULL_HEAD, '= position.writes: "open"', '= facts: {"label":"a"}', '- facts: {"label":"b"}', '+ total: 1', '- total: 2',
+    '= operations: []', '- truncated: true']);
+  // An unreadable position, then a normal view: unavailable is compared like any key, and never named as not included.
+  const normal = { accepted: true, view: { position: { writes: 'open' }, actions: [{ action: 'x' }] }, operations: [] };
+  const unavailable = { accepted: true, view: { unavailable: true }, operations: [] };
+  texts = plan([normal, unavailable, normal].map((answer) => raw(answer)).map(classify));
+  assert.deepEqual(rows(texts[1]), [DELTA_HEAD, '+ unavailable: true', '- actions: {"action":"x"}', '- position.writes: "open"']);
+  assert.deepEqual(rows(texts[2]), [FULL_HEAD, '+ position.writes: "open"', '+ actions: {"action":"x"}', '= operations: []', '- unavailable: true']);
+  assert.ok(texts.every((text) => !text.includes(ABSENT)));
+  // taskStatus gone with an empty focus, and actions omitted when there are none.
+  const plainOf = (extra) => ({ accepted: true, view: { position: { writes: 'open' }, ...extra }, operations: [] });
+  texts = plan([plainOf({ actions: [{ action: 'x' }], taskStatus: [{ goal: 'g1', status: 'open' }] }), plainOf({})].map((answer) => raw(answer)).map(classify));
+  assert.deepEqual(rows(texts[1]), [FULL_HEAD, '= position.writes: "open"', '= operations: []', '- actions: {"action":"x"}', '- taskStatus: {"goal":"g1","status":"open"}']);
+});
+
+test('the gaps group keeps its companion flags; a group counts as not included only when it is absent as a whole', () => {
+  const view = (extra) => ({ accepted: true, view: { position: { writes: 'open' }, ...extra }, operations: [] });
+  const texts = plan([
+    view({ gaps: [{ gap: 'a' }], gapsTruncated: true, gapsTotal: 30 }),
+    view({ gaps: [{ gap: 'a' }] }), // flags gone while gaps stays: real removals
+    view({}), // gaps not included at all
+    view({ total: 3 }), // part of the nodes group present: compared, and the group is not named as absent
+  ].map((answer) => raw(answer)).map(classify));
+  const rows = (text) => text.split('\n').slice(1);
+  assert.deepEqual(rows(texts[1]), [DELTA_HEAD, '- gapsTotal: 30', '- gapsTruncated: true']);
+  assert.deepEqual(rows(texts[2]), [DELTA_NONE, `${ABSENT}gaps`]);
+  assert.deepEqual(rows(texts[3]), [FULL_HEAD, `${ABSENT}gaps`, '= position.writes: "open"', '+ total: 3', '= operations: []']);
+  // Read back, the layout is stable.
+  assert.ok(plan(texts.map(classify)).every((text) => text === null));
 });
