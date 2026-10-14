@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { contextEnv, contextLines, reviewerEnv, writeReviewerEnv } from '../../harness/web/launcher-settings.mjs';
+import { contextEnv, contextLines, REVIEWER_REQUEST_RESERVED_KEYS, reviewerEnv, reviewerRequestExtra, writeReviewerEnv }
+  from '../../harness/web/launcher-settings.mjs';
 import { COMPACTION_RATIO, COMPACTION_HEADROOM_TOKENS, COMPACTION_SUMMARY_MAX_TOKENS, RELIEF_MARGIN, RELIEF_RATIO, compactionLine,
   contextLinesFor } from '../../harness/web/context-relief.mjs';
 
@@ -103,6 +104,73 @@ function launch(settings) {
   return { run, started };
 }
 
+test('reviewerThinking and reviewerRequestExtra become the reviewer request extra; anything else is refused', () => {
+  assert.equal(reviewerRequestExtra({}), undefined, 'absent: send nothing');
+  assert.equal(reviewerRequestExtra({ reviewerThinking: false }), '{"chat_template_kwargs":{"enable_thinking":false}}');
+  assert.equal(reviewerRequestExtra({ reviewerThinking: true }), '{"chat_template_kwargs":{"enable_thinking":true}}');
+  for (const level of ['low', 'medium', 'high']) {
+    assert.deepEqual(JSON.parse(reviewerRequestExtra({ reviewerThinking: level })),
+      { chat_template_kwargs: { enable_thinking: true }, reasoning_effort: level });
+  }
+  for (const bad of ['max', 'true', 'High', 1, 0, null, {}, []]) {
+    assert.throws(() => reviewerRequestExtra({ reviewerThinking: bad }),
+      /reviewerThinking in the settings must be false, true, "low", "medium" or "high"/, JSON.stringify(bad));
+  }
+  // The raw object is written as it is and takes precedence over reviewerThinking.
+  const raw = { chat_template_kwargs: { enable_thinking: true, thinking_budget: 4096 } };
+  assert.equal(reviewerRequestExtra({ reviewerThinking: false, reviewerRequestExtra: raw }), JSON.stringify(raw));
+  assert.equal(reviewerRequestExtra({ reviewerRequestExtra: {} }), '{}');
+  for (const bad of [null, [], 'text', 42, true]) {
+    assert.throws(() => reviewerRequestExtra({ reviewerRequestExtra: bad }), /reviewerRequestExtra in the settings must be a JSON object/);
+  }
+  assert.deepEqual(REVIEWER_REQUEST_RESERVED_KEYS, ['model', 'messages', 'max_tokens', 'temperature', 'stream', 'tools', 'tool_choice', 'n']);
+  for (const key of REVIEWER_REQUEST_RESERVED_KEYS) {
+    assert.throws(() => reviewerRequestExtra({ reviewerRequestExtra: { [key]: 1, chat_template_kwargs: {} } }),
+      { message: `Deep Rulith: reviewerRequestExtra in the settings may not set ${key}; the Worker controls it` });
+  }
+  assert.throws(() => reviewerRequestExtra({ reviewerRequestExtra: { stream: true, n: 2 } }), /may not set stream, n; the Worker controls them/);
+});
+
+test('the request extra is written beside the other reviewer keys and removed when the settings no longer have it', () => {
+  const home = temp();
+  fs.mkdirSync(path.join(home, 'instances', 'on'), { recursive: true });
+  const file = path.join(home, 'instances', 'on', 'local.json');
+  fs.writeFileSync(file, JSON.stringify({ worker: { enabled: true, env: { RULITH_TOOLS_FILE: 'tools.json' } } }));
+  const route = { baseURL: 'http://127.0.0.1:8091/v1', modelId: 'qwen', key: 'k' };
+  const thinking = reviewerEnv({ ...route, extra: reviewerRequestExtra({ reviewerThinking: 'high' }) });
+  assert.equal(writeReviewerEnv(home, thinking), 1);
+  const env = () => JSON.parse(fs.readFileSync(file, 'utf8')).worker.env;
+  assert.equal(env().RULITH_REVIEWER_REQUEST_EXTRA, '{"chat_template_kwargs":{"enable_thinking":true},"reasoning_effort":"high"}');
+  assert.equal(env().RULITH_REVIEWER_MODEL, 'qwen');
+  assert.equal(writeReviewerEnv(home, thinking), 0, 'already written: nothing to do');
+  const off = reviewerEnv({ ...route, extra: reviewerRequestExtra({ reviewerThinking: false }) });
+  assert.equal(writeReviewerEnv(home, off), 1);
+  assert.equal(env().RULITH_REVIEWER_REQUEST_EXTRA, '{"chat_template_kwargs":{"enable_thinking":false}}');
+  const absent = reviewerEnv({ ...route, extra: reviewerRequestExtra({}) });
+  assert.equal(writeReviewerEnv(home, absent), 1);
+  assert.equal(Object.hasOwn(env(), 'RULITH_REVIEWER_REQUEST_EXTRA'), false, 'neither setting: the key is removed');
+  assert.equal(env().RULITH_TOOLS_FILE, 'tools.json');
+  assert.equal(writeReviewerEnv(home, absent), 0, 'already absent: nothing to do');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('the launcher refuses to start on an invalid reviewerThinking or a reviewerRequestExtra with a key the Worker controls', () => {
+  for (const [settings, message] of [
+    [{ reviewerThinking: 'max' }, /reviewerThinking in the settings must be false, true, "low", "medium" or "high" \(got "max"\)/],
+    [{ reviewerRequestExtra: ['x'] }, /reviewerRequestExtra in the settings must be a JSON object/],
+    [{ reviewerThinking: true, reviewerRequestExtra: { max_tokens: 9 } }, /reviewerRequestExtra in the settings may not set max_tokens/],
+  ]) {
+    const refused = launch(settings);
+    assert.notEqual(refused.run.status, 0);
+    assert.match(refused.run.stderr, message);
+    assert.equal(refused.started, null, 'dsh is not started');
+  }
+  for (const settings of [{ reviewerThinking: 'low' }, { reviewerRequestExtra: { chat_template_kwargs: { enable_thinking: true } } }]) {
+    const ok = launch(settings);
+    assert.equal(ok.run.status, 0, ok.run.stderr);
+  }
+});
+
 test('the launcher passes the context lines to dsh, and refuses to start when relief is not below compaction', () => {
   const ok = launch({ reliefRatio: 0.65, compactionRatio: 0.85, localContextWindow: 262144 });
   assert.equal(ok.run.status, 0, ok.run.stderr);
@@ -130,10 +198,12 @@ test("the platform reviewer's route in each enabled Worker's worker.env includes
   instance('empty', null);
   const want = reviewerEnv({ baseURL: 'http://127.0.0.1:8091/v1', modelId: 'qwen', key: 'k' });
   assert.deepEqual(want, { RULITH_REVIEWER_URL: 'http://127.0.0.1:8091/v1/chat/completions', RULITH_REVIEWER_MODEL: 'qwen',
-    RULITH_REVIEWER_KEY: 'k', RULITH_REVIEWER_MAX_TOKENS: '16000', RULITH_REVIEWER_TIMEOUT_MS: '300000' });
+    RULITH_REVIEWER_KEY: 'k', RULITH_REVIEWER_MAX_TOKENS: '16000', RULITH_REVIEWER_TIMEOUT_MS: '300000',
+    RULITH_REVIEWER_REQUEST_EXTRA: undefined });
   assert.equal(writeReviewerEnv(home, want), 1);
   const on = JSON.parse(fs.readFileSync(path.join(home, 'instances', 'on', 'local.json'), 'utf8'));
-  assert.deepEqual(on.worker.env, { RULITH_TOOLS_FILE: 'tools.json', ...want });
+  assert.deepEqual(on.worker.env, { RULITH_TOOLS_FILE: 'tools.json', RULITH_REVIEWER_URL: want.RULITH_REVIEWER_URL,
+    RULITH_REVIEWER_MODEL: 'qwen', RULITH_REVIEWER_KEY: 'k', RULITH_REVIEWER_MAX_TOKENS: '16000', RULITH_REVIEWER_TIMEOUT_MS: '300000' });
   assert.deepEqual(on.agent, { env: { RULITH_TOKEN: 't' } });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'instances', 'off', 'local.json'), 'utf8')).worker.env, {});
   assert.equal(writeReviewerEnv(home, want), 0, 'already written: nothing to do');

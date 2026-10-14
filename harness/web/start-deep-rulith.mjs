@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { contextEnv, contextLines, reviewerEnv, writeReviewerEnv } from './launcher-settings.mjs';
+import { contextEnv, contextLines, reviewerEnv, reviewerRequestExtra, writeReviewerEnv } from './launcher-settings.mjs';
 
 const settingsFile = process.env.DEEP_RULITH_SETTINGS || process.argv[2];
 if (!settingsFile) throw new Error('usage: node start-deep-rulith.mjs <deep-rulith.json> [dsh web flags]');
@@ -37,6 +37,9 @@ const MODEL_MAX_TOKENS = 32768;
 // dsh compacts. Ratios that are invalid in themselves refuse to start; the effective lines of each model route (window
 // and output cap) are computed at run time and logged by board-transcript.mjs.
 const lines = contextLines(s);
+// The reviewer's request extra (reviewerThinking or reviewerRequestExtra; see launcher-settings.mjs). An invalid value, or a
+// key the Worker controls, refuses to start, like the ratios above.
+const reviewerExtra = reviewerRequestExtra(s);
 const env = {
   ...process.env,
   DSH_HOME: s.dshHome, DSH_TELEMETRY_MODE: 'DISABLED', DSH_TELEMETRY_DISABLED: '1',
@@ -73,8 +76,9 @@ function writeReviewerRoute(YAML, doc) {
     if (fs.existsSync(credentials)) key = String(YAML.parse(fs.readFileSync(credentials, 'utf8'))?.refs?.[keyEnv] ?? '');
   }
   if (!baseURL || !modelId) return;
-  // The reviewer's output cap (16000) and timeout (300000 ms, the Gateway's maximum) are explained in launcher-settings.mjs.
-  writeReviewerEnv(s.managerHome, reviewerEnv({ baseURL, modelId, key }));
+  // The reviewer's output cap (16000), timeout (300000 ms, the Gateway's maximum) and request extra (written when the settings
+  // have reviewerThinking or reviewerRequestExtra, removed when they have neither) are explained in launcher-settings.mjs.
+  writeReviewerEnv(s.managerHome, reviewerEnv({ baseURL, modelId, key, extra: reviewerExtra }));
 }
 
 const overlay = fileURLToPath(new URL('./rulith-web.cordis.yml', import.meta.url));

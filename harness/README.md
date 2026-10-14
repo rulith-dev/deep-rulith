@@ -10,7 +10,7 @@
 | `web/rulith-web-gate.mjs` | Restricts children to the three Rulith tools and depth 1; the main agent also has delegation and control tools. |
 | `web/rulith-dsh-ui/` | Browser plugin: the Rulith account entry (bottom left) and, as in the Rulith Runtime's three columns, the right column of every session: goals, recent operations, the current frontier and the local Worker's activity, with the Source bindings Console locked. It holds no key: the workbench link is fetched on demand through `/rulith/api/workbench`. |
 | `web/start-deep-rulith.mjs` | Launcher. Reads the settings file, takes the model from Rulith's model settings and keeps it as the route `rulith-model` in the profile's own `cordis.patch.yml` (the layer dsh's Models page edits, so providers added there survive restarts; the default model points at `rulith-model` until the person picks another), then starts dsh's web profile with the overlay. The model key is passed only in the child's environment. It also passes the two context lines from the settings, `reliefRatio` (default 0.7) and `compactionRatio` (default 0.8, dsh's compaction), refusing to start only when the ratios are invalid in themselves, and writes the platform reviewer's route into each enabled Worker's `worker.env`. |
-| `web/launcher-settings.mjs` | The launcher's pure parts: the ratio check, the environment that carries the lines to the overlay, and the reviewer's `worker.env` lines. |
+| `web/launcher-settings.mjs` | The launcher's pure parts: the ratio check, the environment that carries the lines to the overlay, and the reviewer's `worker.env` lines, including the optional request extra from `reviewerThinking` or `reviewerRequestExtra`. |
 | `web/context-relief.mjs` | The context-relief rules shared by `board-transcript.mjs`, `outgoing-trim.mjs` and the launcher: the two lines (each route's effective lines follow its window and output cap: relief stays at least 20000 tokens before dsh's real compaction line), the relief mark, and how a long argument is shortened. |
 | `rulith-mcp.mjs` | The only MCP client: one main session for every hand, declaring `rulith/v4` at initialize; HTTP MCP. |
 | `rulith-gate.mjs` | Gate addendum text. |
@@ -24,6 +24,18 @@ until the next relief batch (a one-time growth of the prompt). Start long runs o
 
 The upgrade is one-way. Results laid out by this version (per-group comparison, result heads with text blocks, relief
 marks) are not understood by earlier versions: after any downgrade, including back to 9a52924, start a fresh session.
+
+Reviewer thinking (D-1014c addendum, owner 2026-10-14): the platform reviewer runs on the local Worker's model route, and
+`reviewerThinking` in deep-rulith.json decides whether that reviewer thinks, independently of the main agent. `false` or
+`true` sends `{"chat_template_kwargs":{"enable_thinking":<bool>}}` with each review request; `"low"`, `"medium"` or
+`"high"` sends `{"chat_template_kwargs":{"enable_thinking":true},"reasoning_effort":"<level>"}`; absent sends nothing.
+`reviewerRequestExtra` (a JSON object) is written as it is and takes precedence over `reviewerThinking`, so another
+engine parameter (for example a thinking budget, if the engine ignores `reasoning_effort`) needs no code change. On every
+start the launcher writes the result as `RULITH_REVIEWER_REQUEST_EXTRA` into each enabled instance's `worker.env`, next to
+the other `RULITH_REVIEWER_*` keys, and removes that key when neither setting is present. It refuses to start on any other
+value of `reviewerThinking`, on a `reviewerRequestExtra` that is not an object, or on a key the Worker controls
+(`model`, `messages`, `max_tokens`, `temperature`, `stream`, `tools`, `tool_choice`, `n`). The Worker honours the
+key from Runtime 0.16.3; with the rulith dependency still at ^0.16.2 it is ignored.
 
 Long calls: the Gateway holds a call for up to 50 s and then answers `running`; the host plugin
 keeps waiting until the call settles. `RULITH_DSH_WAIT_SECONDS` sets an optional upper bound.
