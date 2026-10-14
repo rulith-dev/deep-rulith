@@ -53,7 +53,10 @@ if (model) {
     if (!fs.existsSync(file)) continue;
     const local = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!local.worker?.enabled) continue;
-    const want = { RULITH_REVIEWER_URL: `${base}/chat/completions`, RULITH_REVIEWER_MODEL: model.name, RULITH_REVIEWER_KEY: model.key };
+    const want = { RULITH_REVIEWER_URL: `${base}/chat/completions`, RULITH_REVIEWER_MODEL: model.name, RULITH_REVIEWER_KEY: model.key,
+      // deepseek-flash reasons before answering and its reasoning counts against max_tokens: 2026-10-14 replays of
+      // 20-25k-character review materials spent all 8000 on reasoning, so the reviewer gets 16000 here.
+      RULITH_REVIEWER_MAX_TOKENS: "16000" };
     const env = local.worker.env ?? {};
     if (Object.entries(want).every(([k, v]) => env[k] === v)) continue;
     local.worker.env = { ...env, ...want };
