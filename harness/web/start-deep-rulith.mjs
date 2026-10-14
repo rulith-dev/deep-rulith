@@ -125,6 +125,13 @@ function writeModelRoute() {
     const models = YAML.isMap(pair.value) ? pair.value.get('models') : undefined;
     for (const entry of YAML.isSeq(models) ? models.items : [])
       if (YAML.isMap(entry) && !entry.has('maxTokens')) entry.set('maxTokens', MODEL_MAX_TOKENS);
+    // A provider the person added on the Models page may name no context window; compaction then triggers against the
+    // library default instead of the server's real size. For a local OpenAI-compatible server (llama.cpp) the launcher
+    // asks nothing and assumes nothing beyond what the person set: `localContextWindow` in deep-rulith.json
+    // fills only entries that have none.
+    if (s.localContextWindow && YAML.isMap(pair.value) && /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(String(pair.value.get('baseURL') ?? '')))
+      for (const entry of YAML.isSeq(models) ? models.items : [])
+        if (YAML.isMap(entry) && !entry.has('contextWindow')) entry.set('contextWindow', s.localContextWindow);
   }
   const text = doc.toString();
   fs.writeFileSync(`${profilePatch}.tmp`, text);
