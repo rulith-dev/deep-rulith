@@ -42,21 +42,37 @@ const env = {
   RULITH_SHADOW_MODEL_KEY: shadowModel?.key ?? '',
 };
 if (!model) console.error('Deep Rulith: no model is set in Rulith yet; set it under 更多设置 (Rulith workbench) and restart.');
-// The local Worker can be the platform's pre-execution reviewer (Runtime 0.16.0): it advertises the capability when its
-// environment names an OpenAI-compatible endpoint and model. The managed host gives the Worker only its instance's
-// worker.env, so the main model's route is written there on every start (the key moves file to file, never printed).
-// Designating the Connection as reviewer in Console is what turns the review on.
-if (model) {
+// The local Worker is the platform reviewer's model route (D-1013f post-call advice). The managed host gives the Worker
+// only its instance's worker.env, so on every start the route of the model dsh currently uses for the agent
+// (agent-default-model: provider, model) is written there: its base URL, model id and key. The key comes from where dsh
+// itself reads it (the Rulith model settings for rulith-model, the provider's apiKeyEnv in the process environment or in
+// dsh's .credentials.yaml otherwise) and moves file to file, never printed. Designating the Connection as reviewer in
+// Console is what turns the review on; the shadow therefore follows the model the person picked (owner 2026-10-14).
+function writeReviewerRoute(YAML, doc) {
+  const rows = YAML.isSeq(doc.contents) ? doc.contents.items : [];
+  const row = (id) => rows.find((item) => YAML.isMap(item) && item.get('id') === id && !item.has('insert'));
+  const chosen = row('agent-default-model');
+  const providerName = chosen?.getIn(['config', 'provider']) ?? 'rulith-model';
+  const modelId = chosen?.getIn(['config', 'model']) ?? env.RULITH_DSH_MODEL;
+  const provider = row('llm-pi-ai')?.getIn(['config', 'providers', providerName]);
+  const baseURL = YAML.isMap(provider) ? String(provider.get('baseURL') ?? '').replace(/\/+$/, '') : '';
+  const keyEnv = YAML.isMap(provider) ? provider.get('apiKeyEnv') : undefined;
+  let key = providerName === 'rulith-model' ? model?.key ?? '' : (keyEnv ? process.env[keyEnv] ?? '' : '');
+  if (!key && keyEnv) {
+    const credentials = path.join(s.dshHome, '.credentials.yaml');
+    if (fs.existsSync(credentials)) key = String(YAML.parse(fs.readFileSync(credentials, 'utf8'))?.refs?.[keyEnv] ?? '');
+  }
+  if (!baseURL || !modelId) return;
   const instances = path.join(s.managerHome, 'instances');
   for (const name of fs.existsSync(instances) ? fs.readdirSync(instances) : []) {
     const file = path.join(instances, name, 'local.json');
     if (!fs.existsSync(file)) continue;
     const local = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!local.worker?.enabled) continue;
-    const want = { RULITH_REVIEWER_URL: `${base}/chat/completions`, RULITH_REVIEWER_MODEL: model.name, RULITH_REVIEWER_KEY: model.key,
-      // deepseek-flash reasons before answering and its reasoning counts against max_tokens: 2026-10-14 replays of
-      // 20-25k-character review materials spent all 8000 on reasoning, so the reviewer gets 16000 here.
-      RULITH_REVIEWER_MAX_TOKENS: "16000" };
+    // Reasoning models spend part of max_tokens thinking: 2026-10-14 replays of 20-25k-character review materials spent
+    // all 8000 on reasoning, so the reviewer gets 16000.
+    const want = { RULITH_REVIEWER_URL: `${baseURL}/chat/completions`, RULITH_REVIEWER_MODEL: String(modelId),
+      RULITH_REVIEWER_KEY: key, RULITH_REVIEWER_MAX_TOKENS: '16000' };
     const env = local.worker.env ?? {};
     if (Object.entries(want).every(([k, v]) => env[k] === v)) continue;
     local.worker.env = { ...env, ...want };
@@ -65,6 +81,12 @@ if (model) {
     fs.renameSync(`${file}.tmp`, file);
   }
 }
+
+// A model entry without maxTokens answers within the library's default output cap, and long tool arguments (a whole
+// file) were cut off mid-call on 2026-10-14 ("已达到输出 token 上限"). Every provider's models get maxTokens 32768 unless
+// the person set one on the Models page.
+const MODEL_MAX_TOKENS = 32768;
+
 const overlay = fileURLToPath(new URL('./rulith-web.cordis.yml', import.meta.url));
 const profile = s.profile ?? 'rulith';
 const profilePatch = path.join(s.dshHome, 'profiles', profile, 'cordis.patch.yml');
@@ -84,7 +106,7 @@ function writeModelRoute() {
   const row = (id) => rows.items.find((item) => YAML.isMap(item) && item.get('id') === id && !item.has('insert'));
   const route = {
     api: 'openai-completions', apiKeyEnv: 'RULITH_MODEL_KEY', baseURL: env.RULITH_DSH_MODEL_BASE,
-    compat: { thinkingFormat: 'deepseek' }, models: [{ id: env.RULITH_DSH_MODEL, contextWindow: 1000000 }],
+    compat: { thinkingFormat: 'deepseek' }, models: [{ id: env.RULITH_DSH_MODEL, contextWindow: 1000000, maxTokens: MODEL_MAX_TOKENS }],
   };
   let llm = row('llm-pi-ai');
   if (!llm) { llm = doc.createNode({ id: 'llm-pi-ai' }); rows.add(llm); }
@@ -98,9 +120,16 @@ function writeModelRoute() {
   const chosen = row('agent-default-model');
   if (!chosen) rows.add(doc.createNode({ id: 'agent-default-model', config: { provider: 'rulith-model', model: env.RULITH_DSH_MODEL } }));
   else if (chosen.getIn(['config', 'provider']) === 'rulith-model') chosen.setIn(['config', 'model'], env.RULITH_DSH_MODEL);
+  const providers = llm.getIn(['config', 'providers']);
+  for (const pair of YAML.isMap(providers) ? providers.items : []) {
+    const models = YAML.isMap(pair.value) ? pair.value.get('models') : undefined;
+    for (const entry of YAML.isSeq(models) ? models.items : [])
+      if (YAML.isMap(entry) && !entry.has('maxTokens')) entry.set('maxTokens', MODEL_MAX_TOKENS);
+  }
   const text = doc.toString();
   fs.writeFileSync(`${profilePatch}.tmp`, text);
   fs.renameSync(`${profilePatch}.tmp`, profilePatch);
+  writeReviewerRoute(YAML, doc);
 }
 
 // --init creates the profile once from dsh's shipped web template (launcher flags must precede app flags such as --port),
