@@ -10,7 +10,7 @@ import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
-import { installThinkingHistory } from './thinking-history.mjs';
+import { installOutgoingTrim } from './outgoing-trim.mjs';
 import { installProjectContext, readSourceBindings, resolveProject } from './project-source.mjs';
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
@@ -59,8 +59,8 @@ export async function apply(ctx, config = {}) {
   // 历史工具调用只在模型侧改名；必须先映射，再排板视图与统计已接受的 Set。
   // 模型看到的 Rulith 结果：最新一份整块板（+／- 标出变化），更早的只留变化（D-1008e，见 board-transcript.mjs）。
   installBoardTranscript(ctx);
-  // 之前轮次的思考不再发回模型，当前这一轮保留（通用做法；见 thinking-history.mjs）。
-  installThinkingHistory(ctx);
+  // 发给模型的那一份在发出前减负（会话不改）：之前轮次的思考不发，更早调用的长参数缩短（见 outgoing-trim.mjs）。
+  installOutgoingTrim(ctx);
 
   // 1. The Runtime manager: start it unless one already serves this port; stop only the one started here.
   let child = null;

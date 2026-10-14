@@ -64,7 +64,7 @@ Requires the Node.js version dsh requires.
 RULITH_RUNTIME_DIR=<rulith-runtime checkout> npm test
 ```
 
-Without `RULITH_RUNTIME_DIR` the tests use the installed `rulith` package. Set `DSH_BASE_FILE` to the installed `@deepseek-ai/dsh-base/cordis.patch.yml` (or `DSH_REFERENCE_DIR` to its source checkout) to run the tool-disable check as well. The launcher refreshes its shipped browser plugin on every start; upgrading does not require recreating your profile.
+Without `RULITH_RUNTIME_DIR` the tests use the installed `rulith` package. Set `DSH_BASE_FILE` to the installed `@deepseek-ai/dsh-base/cordis.patch.yml` (or `DSH_REFERENCE_DIR` to its source checkout) to run the tool-disable check as well, and `DSH_MODULES_DIR` to the installed dsh's `node_modules` to run the installed-dsh contract checks (sub-agent tools, and the outgoing trim on dsh's real agent loop and request path). The launcher refreshes its shipped browser plugin on every start; upgrading does not require recreating your profile.
 
 ## License
 

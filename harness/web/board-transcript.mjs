@@ -14,7 +14,8 @@ import { createHash } from 'node:crypto';
 // 一行仍可解析的紧凑 JSON（只留 accepted、errorCode、tool、requestExecuted、result.action/ok/status，并写明清掉了多少字符）；
 // 其中超过 LONG_LINE 的 `+` 行与 `-` 行一样只显示短身份。最新一份整块板永远原样。
 // 旧工具调用的参数（例如写文件的整段文本）不在这里清：dsh 拒绝替换 assistant/message（它内嵌模型原始输出流，
-// 不能带 sourceEventSeqs；见 tool-history.mjs），插件自定义事件类型又会让会话重启后无法读回。
+// 不能带 sourceEventSeqs；见 tool-history.mjs），插件自定义事件类型又会让会话重启后无法读回。它们只在发出的那一份里
+// 缩短（outgoing-trim.mjs）。
 //
 // 10-09 模型的反馈（项目内容，事后报告）：表头说“整块板”，而视图自己写着 rootScope.lossy 与 dropped，两者打架——这里
 // 给的其实是“Rulith 这次返回的整个视图”，省略了什么由视图自己说；未变的行只靠两个空格，不醒目，改标 `=`；Get
