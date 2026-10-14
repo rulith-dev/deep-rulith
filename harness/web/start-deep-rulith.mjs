@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { contextEnv, contextLines, reviewerEnv, writeReviewerEnv } from './launcher-settings.mjs';
 
 const settingsFile = process.env.DEEP_RULITH_SETTINGS || process.argv[2];
 if (!settingsFile) throw new Error('usage: node start-deep-rulith.mjs <deep-rulith.json> [dsh web flags]');
@@ -28,6 +29,13 @@ if (hostShadow && shadow.modelHome) {
   if (!shadowModel) throw new Error('Deep Rulith: no model is configured in shadow.modelHome');
 }
 const base = model ? model.url.replace(/\/+$/, '') : '';
+// A model entry without maxTokens answers within the library's default output cap, and long tool arguments (a whole
+// file) were cut off mid-call on 2026-10-14 ("已达到输出 token 上限"). Every provider's models get maxTokens 32768 unless
+// the person set one on the Models page.
+const MODEL_MAX_TOKENS = 32768;
+// The two context lines (reliefRatio, compactionRatio; see launcher-settings.mjs): Deep Rulith relieves old results below
+// the line where dsh compacts. Settings that would put relief at or above compaction refuse to start.
+const lines = contextLines(s, { window: s.localContextWindow, maxTokens: MODEL_MAX_TOKENS });
 const env = {
   ...process.env,
   DSH_HOME: s.dshHome, DSH_TELEMETRY_MODE: 'DISABLED', DSH_TELEMETRY_DISABLED: '1',
@@ -40,6 +48,7 @@ const env = {
     provider: shadow.provider ?? (shadowModel ? 'rulith-shadow' : undefined), model: shadow.model ?? shadowModel?.name,
     maxTokens: shadow.maxTokens ?? 8000, timeoutMs: shadow.timeoutMs ?? 120_000 }),
   RULITH_SHADOW_MODEL_KEY: shadowModel?.key ?? '',
+  ...contextEnv(lines),
 };
 if (!model) console.error('Deep Rulith: no model is set in Rulith yet; set it under 更多设置 (Rulith workbench) and restart.');
 // The local Worker is the platform reviewer's model route (D-1013f post-call advice). The managed host gives the Worker
@@ -63,29 +72,9 @@ function writeReviewerRoute(YAML, doc) {
     if (fs.existsSync(credentials)) key = String(YAML.parse(fs.readFileSync(credentials, 'utf8'))?.refs?.[keyEnv] ?? '');
   }
   if (!baseURL || !modelId) return;
-  const instances = path.join(s.managerHome, 'instances');
-  for (const name of fs.existsSync(instances) ? fs.readdirSync(instances) : []) {
-    const file = path.join(instances, name, 'local.json');
-    if (!fs.existsSync(file)) continue;
-    const local = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (!local.worker?.enabled) continue;
-    // Reasoning models spend part of max_tokens thinking: 2026-10-14 replays of 20-25k-character review materials spent
-    // all 8000 on reasoning, so the reviewer gets 16000.
-    const want = { RULITH_REVIEWER_URL: `${baseURL}/chat/completions`, RULITH_REVIEWER_MODEL: String(modelId),
-      RULITH_REVIEWER_KEY: key, RULITH_REVIEWER_MAX_TOKENS: '16000' };
-    const env = local.worker.env ?? {};
-    if (Object.entries(want).every(([k, v]) => env[k] === v)) continue;
-    local.worker.env = { ...env, ...want };
-    fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(local, null, 2)}
-`, { mode: 0o600 });
-    fs.renameSync(`${file}.tmp`, file);
-  }
+  // The reviewer's output cap (16000) and timeout (300000 ms, the Gateway's maximum) are explained in launcher-settings.mjs.
+  writeReviewerEnv(s.managerHome, reviewerEnv({ baseURL, modelId, key }));
 }
-
-// A model entry without maxTokens answers within the library's default output cap, and long tool arguments (a whole
-// file) were cut off mid-call on 2026-10-14 ("已达到输出 token 上限"). Every provider's models get maxTokens 32768 unless
-// the person set one on the Models page.
-const MODEL_MAX_TOKENS = 32768;
 
 const overlay = fileURLToPath(new URL('./rulith-web.cordis.yml', import.meta.url));
 const profile = s.profile ?? 'rulith';

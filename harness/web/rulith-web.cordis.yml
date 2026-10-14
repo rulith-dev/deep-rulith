@@ -184,6 +184,9 @@
         consoleUrl: !!js process.env.RULITH_DSH_CONSOLE_URL
         mcpUrl: !!js process.env.RULITH_DSH_MCP_URL
         shadow: !!js JSON.parse(process.env.RULITH_DSH_SHADOW || '{}')
+        # 减负线（窗口的比例，见 board-transcript.mjs 与 launcher-settings.mjs）；不经启动器时用默认值。表达式里有 `: `，
+        # 不加引号 YAML 会把它读成映射。
+        reliefRatio: !!js 'process.env.RULITH_DSH_RELIEF_RATIO ? Number(process.env.RULITH_DSH_RELIEF_RATIO) : undefined'
     - id: rulith-web-gate
       name: ./rulith-web-gate.mjs
       config:
@@ -192,9 +195,12 @@
       name: rulith-dsh-ui
     # The only agent preset. dsh's stock presets carry their own shell, file, web and subagent tools at the agent layer,
     # which a global tool restriction does not reach, so they stay off. Its one agent-layer group is dsh's compaction
-    # (所有者 2026-10-09：长会话需要它)：上下文到窗口约 80%（再留出输出与 64K 余量）时把较早的一段对话压成摘要，最近约 16%
-    # 原样保留；上下文溢出时先压缩再重试；也可手动 /compact。摘要只是对话的回顾，不是证据：Board 上记下的才算，最新一份
-    # Rulith 结果照样给出整个视图。dsh 的结果裁剪器不挂：Rulith 结果由板视图转录安排。
+    # (所有者 2026-10-09：长会话需要它)：上下文到压缩线时把较早的一段对话压成摘要，最近约 16% 原样保留；上下文溢出时先压缩
+    # 再重试；也可手动 /compact。摘要只是对话的回顾，不是证据：Board 上记下的才算，最新一份 Rulith 结果照样给出整个视图。
+    # dsh 的结果裁剪器不挂：Rulith 结果由板视图转录安排。
+    # 压缩线（2026-10-14）= compactionRatio × 窗口（默认 0.8，deep-rulith.json 可改），在减负线（reliefRatio，默认 0.7）之上：
+    # 启动器把 thresholdRatio、headroomTokens（16384，使“窗口 − 输出上限 − headroom”不再先起作用）与摘要的输出上限
+    # 以 RULITH_DSH_COMPACTION 传进来（见 launcher-settings.mjs）；不经启动器时为 dsh 的默认值。
     - id: preset-rulith
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -209,5 +215,6 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config: !!js JSON.parse(process.env.RULITH_DSH_COMPACTION || '{}')
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'

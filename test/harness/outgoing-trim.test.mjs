@@ -5,10 +5,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { trimOutgoing, shortenArguments, clearedArgument, installOutgoingTrim, replaysConversation,
-  KEEP_CALLS, LONG_ARGUMENT, ARGUMENT_HEAD } from '../../harness/web/outgoing-trim.mjs';
+  reliefBoundary, RELIEF_MARK, LONG_ARGUMENT, ARGUMENT_HEAD } from '../../harness/web/outgoing-trim.mjs';
 
-// 发给模型的那一份在发出前减负（outgoing-trim.mjs）：之前轮次的思考不发；比最近 KEEP_CALLS 个工具调用更早的回答里，
-// 长字符串参数缩短。会话本身不改。先用合成的消息列表检查规则，再用已安装 dsh 的真实内核（DSH_MODULES_DIR）证明
+// 发给模型的那一份在发出前减负（outgoing-trim.mjs）：之前轮次的思考不发；减负边界（最新一份以减负标记结尾的工具结果，
+// 由 board-transcript.mjs 写下）之前的回答里，长字符串参数缩短。会话本身不改。先用合成的消息列表检查规则，再用已安装 dsh 的真实内核（DSH_MODULES_DIR）证明
 // 这个监听者确实在 dsh 的请求路径上被调用。
 
 let ids = 0;
@@ -18,7 +18,10 @@ const say = (text) => ({ type: 'text', text });
 const call = (id, args = {}, name = 'Execute') => ({ type: 'tool-call', id, name, arguments: JSON.stringify(args) });
 const reply = (...content) => ({ id: `a${ids++}`, role: 'assistant', content,
   source: { kind: 'model', provider: 'p', model: 'm', replayState: { response: { kind: 'pi-ai' }, blocks: content.map((block) => ({ type: block.type })) } } });
-const result = (id) => ({ id: `t${ids++}`, role: 'tool', toolCallId: id, content: [say('ok')], source: { kind: 'tool', callId: id } });
+const result = (id, text = 'ok') => ({ id: `t${ids++}`, role: 'tool', toolCallId: id, content: [say(text)], source: { kind: 'tool', callId: id } });
+// A result that board-transcript.mjs made the boundary of a relief batch: its last line is the relief mark.
+const marked = (id) => result(id, `ok\n${RELIEF_MARK}`);
+const N = 6;
 const types = (message) => message.content.map((block) => block.type).join('+');
 const big = (seed, n = LONG_ARGUMENT + 1) => `${seed}:`.padEnd(n, seed);
 const sha = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16);
@@ -58,14 +61,14 @@ test('a reply that was only reasoning keeps an empty text block; with no message
   assert.equal(trimOutgoing(noPerson), noPerson, 'unchanged lists come back as the same array');
 });
 
-test('long string arguments of calls older than the most recent six are shortened; ids, names and recent calls are kept', () => {
+test('long string arguments of calls before the relief mark are shortened; ids, names and later calls are kept', () => {
   const text = big('w', 90_000);
   const nested = { source: 'lab', files: [{ path: 'a.js', text: big('n') }], note: 'short', count: 3 };
   const messages = [person('build it')];
   messages.push(reply(think('t0'), call('c0', { action: 'eng.write_file', args: { path: 'game.js', text } }, 'Execute')), result('c0'));
   messages.push(reply(call('c1', nested, 'Set'), call('c2', { text: 'small' }, 'Get')), result('c1'), result('c2'));
-  messages.push(reply(call('c3', { raw: big('x') }), say('parallel')), result('c3'));
-  for (let i = 4; i < 4 + KEEP_CALLS; i++) messages.push(reply(call(`c${i}`, { text: big(String(i % 10)) })), result(`c${i}`));
+  messages.push(reply(call('c3', { raw: big('x') }), say('parallel')), marked('c3'));
+  for (let i = 4; i < 4 + N; i++) messages.push(reply(call(`c${i}`, { text: big(String(i % 10)) })), result(`c${i}`));
   const out = trimOutgoing(messages);
   const args = (message, index = 0) => JSON.parse(message.content.filter((b) => b.type === 'tool-call')[index].arguments);
   assert.equal(args(out[1]).args.text, `${text.slice(0, ARGUMENT_HEAD)}… [cleared to save context: ${text.length} characters, sha256 ${sha(text)}]`);
@@ -78,7 +81,7 @@ test('long string arguments of calls older than the most recent six are shortene
     if (m.role !== 'assistant') continue;
     assert.deepEqual(m.content.map((b) => [b.type, b.id, b.name]), messages[i].content.map((b) => [b.type, b.id, b.name]));
   }
-  // The six most recent calls and everything after them (the current step) go out exactly as recorded.
+  // Everything from the marked result on goes out exactly as recorded.
   for (let i = 8; i < out.length; i++) assert.equal(out[i], messages[i]);
   assert.equal(out[1].content[0], messages[1].content[0], 'the current turn keeps its reasoning');
   // The shortened form is far below the limit, so a second pass changes nothing; equal input gives equal output.
@@ -86,14 +89,24 @@ test('long string arguments of calls older than the most recent six are shortene
   assert.deepEqual(trimOutgoing(structuredClone(messages)), out);
 });
 
-test('the boundary follows the sixth most recent call: exactly six calls shorten nothing, the seventh ages one reply out', () => {
+test('the boundary is the newest result ending with the relief mark; without one nothing is shortened', () => {
   const messages = [person('go')];
-  for (let i = 0; i < KEEP_CALLS; i++) messages.push(reply(call(`c${i}`, { text: big('a') })), result(`c${i}`));
+  for (let i = 0; i < 4; i++) messages.push(reply(call(`c${i}`, { text: big('a') })), result(`c${i}`));
   assert.equal(trimOutgoing(messages), messages);
-  messages.push(reply(call('c6', { text: big('b') })), result('c6'));
-  const out = trimOutgoing(messages);
+  // The mark counts only as the result's last line.
+  messages[4] = result('c1', `${RELIEF_MARK}\nmore output`);
+  assert.equal(reliefBoundary(messages), -1);
+  assert.equal(trimOutgoing(messages), messages);
+  messages[4] = marked('c1');
+  assert.equal(reliefBoundary(messages), 4);
+  let out = trimOutgoing(messages);
+  assert.deepEqual(out.map((m, i) => m !== messages[i]), [false, true, false, true, false, false, false, false, false]);
   assert.match(JSON.parse(out[1].content[0].arguments).text, /… \[cleared to save context: 4097 characters, sha256 [0-9a-f]{16}\]$/);
-  assert.equal(out.filter((m, i) => m !== messages[i]).length, 1);
+  // A later batch's mark moves the boundary; the earlier mark stays where it is.
+  messages[8] = marked('c3');
+  assert.equal(reliefBoundary(messages), 8);
+  out = trimOutgoing(messages);
+  assert.equal(out.filter((m, i) => m !== messages[i]).length, 4);
 });
 
 test('arguments that are not a JSON object, or have no long string, are left alone', () => {
@@ -178,34 +191,36 @@ test('installed dsh: the agent loop sends the trimmed copy to the adapter and ke
   }
   ctx.llm.registerAdapter(['scripted'], new Scripted());
   ctx.tools.register({ name: 'write', description: 'write a file', parameters: { type: 'object', properties: { text: { type: 'string' } } },
-    output: { schema: {}, render: () => [say('written')] }, async execute() { return 'written'; } });
+    // The first call's result ends with the relief mark, as if board-transcript.mjs had made it a batch boundary.
+    output: { schema: {}, render: (_args, text) => [say(text)] },
+    async execute(args) { return args.text.startsWith('1:') ? `written\n${RELIEF_MARK}` : 'written'; } });
   installOutgoingTrim(ctx);
   const handle = await ctx.agents.create({ sessionId: 'outgoing-trim-integration', agentOptions: { provider: 'scripted', model: 'm' } });
   try {
     const text = (i) => big(String(i), 5000);
-    for (let i = 1; i <= KEEP_CALLS + 1; i++) script.push([think(`think ${i}`), call(`c${i}`, { text: text(i) }, 'write')]);
+    for (let i = 1; i <= N + 1; i++) script.push([think(`think ${i}`), call(`c${i}`, { text: text(i) }, 'write')]);
     script.push([think('final'), say('all written')]);
     handle.agent.followup(createUserMessage({ content: [say('first')], source: { kind: 'user' } }));
     await handle.agent.whenIdle();
     script.push([say('second answer')]);
     handle.agent.followup(createUserMessage({ content: [say('second')], source: { kind: 'user' } }));
     await handle.agent.whenIdle();
-    assert.equal(received.length, KEEP_CALLS + 3);
+    assert.equal(received.length, N + 3);
     const replies = (messages) => messages.filter((m) => m.role === 'assistant');
     const argsOf = (message) => JSON.parse(message.content.find((b) => b.type === 'tool-call').arguments).text;
     // Turn 1, last step: its own reasoning is kept; the first call is now older than the latest six.
-    const lastStep = replies(received[KEEP_CALLS + 1]);
-    assert.deepEqual(lastStep.map(types), Array(KEEP_CALLS + 1).fill('reasoning+tool-call'));
+    const lastStep = replies(received[N + 1]);
+    assert.deepEqual(lastStep.map(types), Array(N + 1).fill('reasoning+tool-call'));
     assert.equal(argsOf(lastStep[0]), clearedArgument(text(1)));
-    for (let i = 1; i <= KEEP_CALLS; i++) assert.equal(argsOf(lastStep[i]), text(i + 1));
+    for (let i = 1; i <= N; i++) assert.equal(argsOf(lastStep[i]), text(i + 1));
     // Turn 2: turn 1's reasoning is gone, text, ids, names and replay alignment are kept.
-    const second = replies(received[KEEP_CALLS + 2]);
-    assert.deepEqual(second.map(types), [...Array(KEEP_CALLS + 1).fill('tool-call'), 'text']);
-    assert.deepEqual(second.map((m) => m.content.map((b) => b.id ?? b.text)), [...Array.from({ length: KEEP_CALLS + 1 }, (_, i) => [`c${i + 1}`]), ['all written']]);
+    const second = replies(received[N + 2]);
+    assert.deepEqual(second.map(types), [...Array(N + 1).fill('tool-call'), 'text']);
+    assert.deepEqual(second.map((m) => m.content.map((b) => b.id ?? b.text)), [...Array.from({ length: N + 1 }, (_, i) => [`c${i + 1}`]), ['all written']]);
     for (const m of second) assert.deepEqual(m.source.replayState.blocks.map((b) => b.type), m.content.map((b) => b.type));
     // The session keeps every reasoning block and the full arguments.
     const stored = replies(handle.agent.session.deriveMessages());
-    assert.deepEqual(stored.slice(0, KEEP_CALLS + 2).map(types), [...Array(KEEP_CALLS + 1).fill('reasoning+tool-call'), 'reasoning+text']);
+    assert.deepEqual(stored.slice(0, N + 2).map(types), [...Array(N + 1).fill('reasoning+tool-call'), 'reasoning+text']);
     assert.equal(argsOf(stored[0]), text(1));
   } finally {
     await handle.dispose();

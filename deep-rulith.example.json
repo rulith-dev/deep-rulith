@@ -9,5 +9,7 @@
   "persona": "/path/to/deep-rulith/harness/runtime-persona.txt",
   "webPort": 3080,
   "shadow": { "enabled": false },
-  "localContextWindow": 262144
+  "localContextWindow": 262144,
+  "reliefRatio": 0.7,
+  "compactionRatio": 0.8
 }

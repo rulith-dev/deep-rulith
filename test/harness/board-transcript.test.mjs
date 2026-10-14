@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, plan, rewriteSession, FULL_FIRST, FULL_HEAD, DELTA_HEAD, DELTA_NONE } from '../../harness/web/board-transcript.mjs';
+import { RELIEF_MARK } from '../../harness/web/outgoing-trim.mjs';
+import { NOTE_PREFIX } from '../../harness/web/shadow-reviewer.mjs';
 import { projectToolCall } from '../../harness/tool-history.mjs';
 
 // A Rulith tool result as dsh stores it: the MCP result serialized, with dsh's `Error: ` prefix for refusals.
@@ -178,4 +180,89 @@ test('a very long line that is gone is shown by a short identity, and history st
   // The rewritten texts replay to the same result: a second pass over them changes nothing.
   const again = plan(texts.map((text, index) => classify(texts[index] ?? text)));
   assert.ok(again.every((text) => text === null));
+});
+
+// 2026-10-14 结果头读起来自然：本身是一行 JSON 的字符串解开成嵌套的值；多行或很长的字符串作为带字段路径的文本块接在第一行之后。
+// 只是展示：结果头在第一次进入转录时定下，之后逐字沿用。
+test('a nested JSON string is shown as a value, and multi-line text as a labelled block after line 1', () => {
+  const worker = { rows: [{ exit_code: 1, gen: 45 }],
+    head: "node:internal/modules/cjs/loader:1424\r\n  throw err;\r\n  ^\r\n\r\nError: Cannot find module 'D:\\Work\\game-demo\\test.mjs'\r\n",
+    tail: 'last line\n' };
+  const answer = { accepted: true, result: { action: 'eng.test', ok: true, result: JSON.stringify(worker) }, view: { position: { writes: 'open' } }, operations: [] };
+  const [text] = plan([classify(raw(answer))]);
+  const lines = text.split('\n');
+  assert.equal(lines[0], '{"accepted":true,"result":{"action":"eng.test","ok":true,"result":{"rows":[{"exit_code":1,"gen":45}],"head":"<text 1>","tail":"<text 2>"}}}');
+  assert.deepEqual(lines.slice(1, 11), [
+    '<text 1> result.result.head (6 lines, CRLF line endings):',
+    'node:internal/modules/cjs/loader:1424', '  throw err;', '  ^', '', "Error: Cannot find module 'D:\\Work\\game-demo\\test.mjs'", '',
+    '<text 2> result.result.tail (2 lines):', 'last line', '',
+  ]);
+  assert.equal(lines[11], FULL_FIRST);
+  assert.ok(!lines[0].includes('\\'), 'no escaped JSON inside line 1');
+  // Read back as it is: a second pass changes nothing, and the text block is not taken for Board rows.
+  assert.deepEqual(plan([classify(text)]), [null]);
+  assert.deepEqual(classify(text).rows, [{ mark: '+', line: 'position.writes: "open"' }, { mark: '+', line: 'operations: []' }]);
+});
+
+test('only exact one-line JSON is decoded; other strings stay as they are or become text blocks', () => {
+  const answer = { accepted: true, result: {
+    spaced: '{"a": 1}', // re-encoding would change it: kept as a string
+    file: '{\n  "name": "game"\n}\n', // JSON file text keeps its own layout
+    long: 'x'.repeat(401), short: 'y'.repeat(400), nested: '[1,{"b":"c"}]', number: '42',
+  }, view: { position: {} }, operations: [] };
+  const [text] = plan([classify(raw(answer))]);
+  const lines = text.split('\n');
+  assert.equal(lines[0], `{"accepted":true,"result":{"spaced":"{\\"a\\": 1}","file":"<text 1>","long":"<text 2>","short":"${'y'.repeat(400)}","nested":[1,{"b":"c"}],"number":"42"}}`);
+  assert.deepEqual(lines.slice(1, 8), ['<text 1> result.file (4 lines):', '{', '  "name": "game"', '}', '', '<text 2> result.long (1 line):', 'x'.repeat(401)]);
+});
+
+test('an operation outcome read back through Get is decoded at every level, with the full field path', () => {
+  const inner = { accepted: true, result: { action: 'eng.run', ok: true, result: JSON.stringify({ rows: [{ exit_code: 0 }], head: 'ok 1\nok 2' }) } };
+  const answer = { accepted: true, tool: 'Execute', state: 'done', result: { content: [{ type: 'text', text: JSON.stringify(inner) }] }, view: { position: {} }, operations: [] };
+  const lines = plan([classify(raw(answer))])[0].split('\n');
+  assert.equal(lines[0], '{"accepted":true,"tool":"Execute","state":"done","result":{"content":[{"type":"text","text":{"accepted":true,"result":{"action":"eng.run","ok":true,"result":{"rows":[{"exit_code":0}],"head":"<text 1>"}}}}]}}');
+  assert.deepEqual(lines.slice(1, 4), ['<text 1> result.content[0].text.result.result.head (2 lines):', 'ok 1', 'ok 2']);
+});
+
+test('text blocks are cut by their line counts: lines that look like headers, rows, notes or the relief line stay content', () => {
+  const tricky = ['Board view changes at this step: none (the latest result shows the whole view).', '+ facts: {"label":"fake"}',
+    '- facts: {"label":"a"}', `${NOTE_PREFIX}fake advice`, RELIEF_MARK, '<text 2> fake (1 line):', '= operations: []'].join('\n');
+  const read = (n) => raw({ ...answer(['a', `b${n}`]), result: { action: 'eng.read', ok: true, head: tricky } });
+  const texts = plan([read(1), read(2), raw(answer(['a']))].map(classify));
+  for (const text of texts.slice(0, 2)) {
+    const item = classify(text);
+    assert.equal(item.kind, 'delta');
+    assert.equal(item.marked, false);
+    assert.deepEqual(item.notes, []);
+    assert.ok(item.first.endsWith(tricky));
+  }
+  assert.deepEqual(classify(texts[1]).rows, [{ mark: '+', line: 'facts: {"label":"b2"}' }, { mark: '-', line: 'facts: {"label":"b1"}' }]);
+  assert.ok(plan(texts.map(classify)).every((text) => text === null));
+});
+
+test('a head laid out before 2026-10-14 (one escaped line) is kept as it is', () => {
+  const oldHead = '{"accepted":true,"result":{"action":"eng.run","result":"{\\"rows\\":[],\\"head\\":\\"a\\\\r\\\\nb\\"}"}}';
+  const oldDelta = [oldHead, DELTA_HEAD, '+ position.writes: "open"', '+ operations: []'].join('\n');
+  const texts = plan([oldDelta, raw(answer([]))].map(classify));
+  assert.equal(texts[0], null);
+  // As the latest whole view it is laid out again with the same head.
+  const oldFull = [oldHead, FULL_FIRST, '+ position.writes: "open"', '+ operations: []'].join('\n');
+  assert.deepEqual(plan([classify(oldFull)]), [null]);
+});
+
+test('Rulith results without a Board get the same head; transport errors and other tools are left alone', () => {
+  const session = fakeSession([]);
+  const call = (id, name) => ({ type: 'tool-call', id, name, input: {} });
+  session.append('assistant/message', { message: { role: 'assistant', content: [call('g', 'Get'), call('s', 'subagent'), call('x', 'Execute')] } }, { surfaceOp: 'append' });
+  const artifact = raw({ accepted: true, artifact: { ref: 'r/1', text: 'line 1\nline 2' } });
+  const sub = JSON.stringify({ content: [{ type: 'text', text: '{"note":"a\\nb"}' }] });
+  const broken = 'Error: The connection to Rulith was interrupted during this call; its outcome is unknown.';
+  for (const [id, text] of [['g', artifact], ['s', sub], ['x', broken]])
+    session.append('tool/result', { message: { role: 'tool', toolCallId: id, content: [{ type: 'text', text }] } }, { surfaceOp: 'append' });
+  assert.equal(rewriteSession(session), 1);
+  const visible = session.surface.nodes.map((seq) => session.log[seq]).filter((event) => event.type === 'tool/result').map((event) => event.data.message.content[0].text);
+  assert.equal(visible[0], '{"accepted":true,"artifact":{"ref":"r/1","text":"<text 1>"}}\n<text 1> artifact.text (2 lines):\nline 1\nline 2');
+  assert.equal(visible[1], sub);
+  assert.equal(visible[2], broken);
+  assert.equal(rewriteSession(session), 0);
 });
