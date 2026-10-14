@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 // 发给模型的那份对话，发出前再减一次负（2026-10-14；取代 10-09 的 thinking-history.mjs）。
 //
 // 10-09 起“之前轮次的思考不再发回模型”从没在生产里生效：它用 dsh 的“替换”记录改写 assistant/message，已安装的 dsh
@@ -17,7 +16,7 @@ import { createHash } from 'node:crypto';
 //      dsh 压缩留下的摘要（compact-checkpoint）与项目上下文（rulith-project）也是 user 角色，但会出现在一轮中间，不算新一轮。
 //   2. 减负边界之前的模型回答里，工具调用参数中长于 LONG_ARGUMENT 个字符的字符串（任意嵌套深度），换成
 //      “前 ARGUMENT_HEAD 个字符… [cleared to save context: N characters, sha256 <16 hex>]”。边界是最新一份以减负标记
-//      （RELIEF_MARK）结尾的工具结果；没有标记就没有边界，什么参数都不缩短。
+//      （RELIEF_MARK）结尾的带板 Rulith 结果；没有标记就没有边界，什么参数都不缩短。
 //      边界由 board-transcript.mjs 决定（2026-10-14 起：只在最近一次请求的真实提示到了减负线、而且一批能省够时才移动），
 //      并以替换记录写进会话，这里只读它，不自己开窗口：结果减负与参数缩短永远是同一个边界。
 //
@@ -33,49 +32,17 @@ import { createHash } from 'node:crypto';
 //   5. 发出的副本是记录下来的请求的确定性函数，所以仍可由会话日志加这份代码重算；但 dsh 自己的会话导出、检查器显示的是
 //      未减负的原请求。
 //   6. dsh 压缩把从对话开头起的一段换成摘要：标记若被压缩掉，它之前的回答也都被压缩掉了，剩下的对话里没有更早的回答可缩短。
+//   7. 标记只认 board-transcript.mjs 的分类器认出的带板结果的最后一行（reliefBoundary）：Get 读到的文件、子 Agent 的回答
+//      等工具内容里出现同样的文字，不能冒充边界。
 
-/**
- * 减负标记：board-transcript.mjs 在一批减负的边界结果末尾写下的一行（模型可见）。标记所在结果及之前的 Rulith 结果已减负，
- * 之前的模型回答里的长参数在发出时缩短。
- */
-export const RELIEF_MARK = 'Context relieved up to here: earlier Rulith results keep only their outcome and Board changes, and long tool-call arguments are shortened; the Board holds the state.';
-export const LONG_ARGUMENT = 4096;
-export const ARGUMENT_HEAD = 400;
+import { reliefBoundary } from './board-transcript.mjs';
+import { shortenArguments } from './context-relief.mjs';
+// 长参数怎样缩短在 context-relief.mjs 里（board-transcript.mjs 估算一批能省多少时用同一个函数）；这里照旧导出。
+export { ARGUMENT_HEAD, LONG_ARGUMENT, clearedArgument, shortenArguments } from './context-relief.mjs';
+
 const TURN_SOURCES = new Set(['user', 'agent-message']);
 const REASONING = 'reasoning';
 const TOOL_CALL = 'tool-call';
-
-/** 一个过长参数的替身：开头 ARGUMENT_HEAD 个字符（不劈开代理对），原长与 sha256 前 16 位。 */
-export function clearedArgument(text) {
-  let end = ARGUMENT_HEAD;
-  const last = text.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
-  const digest = createHash('sha256').update(text).digest('hex').slice(0, 16);
-  return `${text.slice(0, end)}… [cleared to save context: ${text.length} characters, sha256 ${digest}]`;
-}
-
-/** 递归缩短长字符串；没有变化时原样返回同一个值。对象用 fromEntries 重建，`__proto__` 这样的键也只是普通的键。 */
-function shorten(value) {
-  if (typeof value === 'string') return value.length > LONG_ARGUMENT ? clearedArgument(value) : value;
-  if (value === null || typeof value !== 'object') return value;
-  let changed = false;
-  const visit = (child) => { const next = shorten(child); if (next !== child) changed = true; return next; };
-  const next = Array.isArray(value) ? value.map(visit) : Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child)]));
-  return changed ? next : value;
-}
-
-/**
- * 一个工具调用的原始 JSON 参数，长字符串缩短后的样子。解析不了或顶层不是对象的参数不动：dsh 的 pi-ai 适配器本来就把它们
- * 按 {} 发出。重新序列化与适配器发出时的 JSON.stringify 相同，所以除缩短处外线上内容不变。
- */
-export function shortenArguments(raw) {
-  if (typeof raw !== 'string' || raw.length <= LONG_ARGUMENT) return raw;
-  let parsed;
-  try { parsed = JSON.parse(raw); } catch { return raw; }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return raw;
-  const next = shorten(parsed);
-  return next === parsed ? raw : JSON.stringify(next);
-}
 
 // 同一个（冻结的）调用块在一次次请求里反复出现；记住它的缩短结果，免得每次重新解析几万字符。只是纯函数的缓存。
 const shortened = new WeakMap();
@@ -111,24 +78,13 @@ function trimReply(message, dropReasoning, shortenCalls) {
   return Object.freeze({ ...message, content: Object.freeze(blocks), source });
 }
 
-const textOf = (message) => (Array.isArray(message?.content) ? message.content.map((part) => (part?.type === 'text' ? part.text : '')).join('') : '');
-
-/** 减负边界在消息列表里的下标：最新一份以 RELIEF_MARK 这一整行结尾的工具结果；没有时为 -1。 */
-export function reliefBoundary(messages) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === 'tool' && textOf(message).endsWith(`\n${RELIEF_MARK}`)) return index;
-  }
-  return -1;
-}
-
 /** 发出前的那份消息列表减负后的样子；没有可减的就原样返回同一个数组。 */
 export function trimOutgoing(messages) {
   let turnStart = -1;
   messages.forEach((message, index) => {
     if (message?.role === 'user' && TURN_SOURCES.has(message.source?.kind)) turnStart = index;
   });
-  // 减负边界：最新一份以减负标记结尾的工具结果；它之前的回答算“更早”。没有标记时没有更早的。
+  // 减负边界：最新一份以减负标记结尾的带板结果；它之前的回答算“更早”。没有标记时没有更早的。
   const oldBefore = reliefBoundary(messages);
   let out = null;
   messages.forEach((message, index) => {

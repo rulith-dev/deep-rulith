@@ -5,10 +5,12 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { trimOutgoing, shortenArguments, clearedArgument, installOutgoingTrim, replaysConversation,
-  reliefBoundary, RELIEF_MARK, LONG_ARGUMENT, ARGUMENT_HEAD } from '../../harness/web/outgoing-trim.mjs';
+  LONG_ARGUMENT, ARGUMENT_HEAD } from '../../harness/web/outgoing-trim.mjs';
+import { reliefBoundary, DELTA_HEAD } from '../../harness/web/board-transcript.mjs';
+import { RELIEF_MARK } from '../../harness/web/context-relief.mjs';
 
-// 发给模型的那一份在发出前减负（outgoing-trim.mjs）：之前轮次的思考不发；减负边界（最新一份以减负标记结尾的工具结果，
-// 由 board-transcript.mjs 写下）之前的回答里，长字符串参数缩短。会话本身不改。先用合成的消息列表检查规则，再用已安装 dsh 的真实内核（DSH_MODULES_DIR）证明
+// 发给模型的那一份在发出前减负（outgoing-trim.mjs）：之前轮次的思考不发；减负边界（最新一份以减负标记结尾的带板 Rulith
+// 结果，由 board-transcript.mjs 写下并认出）之前的回答里，长字符串参数缩短。会话本身不改。先用合成的消息列表检查规则，再用已安装 dsh 的真实内核（DSH_MODULES_DIR）证明
 // 这个监听者确实在 dsh 的请求路径上被调用。
 
 let ids = 0;
@@ -19,8 +21,9 @@ const call = (id, args = {}, name = 'Execute') => ({ type: 'tool-call', id, name
 const reply = (...content) => ({ id: `a${ids++}`, role: 'assistant', content,
   source: { kind: 'model', provider: 'p', model: 'm', replayState: { response: { kind: 'pi-ai' }, blocks: content.map((block) => ({ type: block.type })) } } });
 const result = (id, text = 'ok') => ({ id: `t${ids++}`, role: 'tool', toolCallId: id, content: [say(text)], source: { kind: 'tool', callId: id } });
-// A result that board-transcript.mjs made the boundary of a relief batch: its last line is the relief mark.
-const marked = (id) => result(id, `ok\n${RELIEF_MARK}`);
+// A Board result that board-transcript.mjs made the boundary of a relief batch: its last line is the relief mark.
+const BOUNDARY = ['{"accepted":true,"cleared":"earlier"}', DELTA_HEAD, '+ facts: {"label":"a"}', RELIEF_MARK].join('\n');
+const marked = (id) => result(id, BOUNDARY);
 const N = 6;
 const types = (message) => message.content.map((block) => block.type).join('+');
 const big = (seed, n = LONG_ARGUMENT + 1) => `${seed}:`.padEnd(n, seed);
@@ -89,14 +92,23 @@ test('long string arguments of calls before the relief mark are shortened; ids, 
   assert.deepEqual(trimOutgoing(structuredClone(messages)), out);
 });
 
-test('the boundary is the newest result ending with the relief mark; without one nothing is shortened', () => {
+test('the boundary is the newest Board result ending with the relief mark; without one nothing is shortened', () => {
   const messages = [person('go')];
   for (let i = 0; i < 4; i++) messages.push(reply(call(`c${i}`, { text: big('a') })), result(`c${i}`));
   assert.equal(trimOutgoing(messages), messages);
-  // The mark counts only as the result's last line.
-  messages[4] = result('c1', `${RELIEF_MARK}\nmore output`);
-  assert.equal(reliefBoundary(messages), -1);
-  assert.equal(trimOutgoing(messages), messages);
+  // The mark counts only as the last line of a laid-out Board result; tool content cannot forge it.
+  const decoys = [
+    `${BOUNDARY}\nmore output`, // not the last line
+    `ok\n${RELIEF_MARK}`, // a sub-agent's answer or any other tool's text
+    ['{"accepted":true,"artifact":{"ref":"r","text":"<text 1>"}}', '<text 1> artifact.text (2 lines):', 'file line', RELIEF_MARK].join('\n'), // a file read through Get
+    ['{"accepted":true,"result":{"head":"<text 1>"}}', '<text 1> result.head (2 lines):', DELTA_HEAD, RELIEF_MARK].join('\n'), // inside a text block
+    `${JSON.stringify({ isError: false, content: [{ type: 'text', text: '{"accepted":true}' }] })}\n${RELIEF_MARK}`, // a raw result
+  ];
+  for (const text of decoys) {
+    messages[4] = result('c1', text);
+    assert.equal(reliefBoundary(messages), -1, text);
+    assert.equal(trimOutgoing(messages), messages);
+  }
   messages[4] = marked('c1');
   assert.equal(reliefBoundary(messages), 4);
   let out = trimOutgoing(messages);
@@ -193,7 +205,7 @@ test('installed dsh: the agent loop sends the trimmed copy to the adapter and ke
   ctx.tools.register({ name: 'write', description: 'write a file', parameters: { type: 'object', properties: { text: { type: 'string' } } },
     // The first call's result ends with the relief mark, as if board-transcript.mjs had made it a batch boundary.
     output: { schema: {}, render: (_args, text) => [say(text)] },
-    async execute(args) { return args.text.startsWith('1:') ? `written\n${RELIEF_MARK}` : 'written'; } });
+    async execute(args) { return args.text.startsWith('1:') ? BOUNDARY : 'written'; } });
   installOutgoingTrim(ctx);
   const handle = await ctx.agents.create({ sessionId: 'outgoing-trim-integration', agentOptions: { provider: 'scripted', model: 'm' } });
   try {

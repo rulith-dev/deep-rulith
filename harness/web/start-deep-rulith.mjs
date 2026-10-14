@@ -33,9 +33,10 @@ const base = model ? model.url.replace(/\/+$/, '') : '';
 // file) were cut off mid-call on 2026-10-14 ("已达到输出 token 上限"). Every provider's models get maxTokens 32768 unless
 // the person set one on the Models page.
 const MODEL_MAX_TOKENS = 32768;
-// The two context lines (reliefRatio, compactionRatio; see launcher-settings.mjs): Deep Rulith relieves old results below
-// the line where dsh compacts. Settings that would put relief at or above compaction refuse to start.
-const lines = contextLines(s, { window: s.localContextWindow, maxTokens: MODEL_MAX_TOKENS });
+// The two context lines (reliefRatio, compactionRatio; see context-relief.mjs): Deep Rulith relieves old results before
+// dsh compacts. Ratios that are invalid in themselves refuse to start; the effective lines of each model route (window
+// and output cap) are computed at run time and logged by board-transcript.mjs.
+const lines = contextLines(s);
 const env = {
   ...process.env,
   DSH_HOME: s.dshHome, DSH_TELEMETRY_MODE: 'DISABLED', DSH_TELEMETRY_DISABLED: '1',

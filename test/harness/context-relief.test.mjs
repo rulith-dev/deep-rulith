@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, clearFirst, identity, plan, rewriteSession, latestPromptTokens, KEEP, CLEAR_AT_LEAST, CLEAR_FIRST_LINE,
-  CHARS_PER_TOKEN, RELIEF_RATIO, FULL_HEAD, DELTA_HEAD } from '../../harness/web/board-transcript.mjs';
-import { RELIEF_MARK, reliefBoundary, trimOutgoing, clearedArgument } from '../../harness/web/outgoing-trim.mjs';
+import { classify, clearFirst, identity, plan, rewriteSession as rewrite, latestPromptTokens, reliefBoundary, sessionLines, KEEP,
+  CLEAR_AT_LEAST, CLEAR_FIRST_LINE, CHARS_PER_TOKEN, FULL_HEAD, DELTA_HEAD } from '../../harness/web/board-transcript.mjs';
+import { RELIEF_MARK, RELIEF_RATIO, RELIEF_MARGIN, contextLinesFor } from '../../harness/web/context-relief.mjs';
+import { contextEnv } from '../../harness/web/launcher-settings.mjs';
+import { trimOutgoing, clearedArgument } from '../../harness/web/outgoing-trim.mjs';
 
 // 2026-10-14 上下文减负：低于减负线什么旧的都不改；到了减负线（最近一次请求的真实提示 ≥ reliefRatio × 窗口）一批减负，
 // 只在估计能省够 CLEAR_AT_LEAST 时才做；边界写成结果末尾的标记，发出副本时的参数缩短读同一个标记。
@@ -28,8 +30,13 @@ function stepAnswer(i, size = 400) {
 const history = (n) => Array.from({ length: n }, (_, i) => raw(stepAnswer(i), refused(i)));
 const rowsOf = (text) => text.split('\n').slice(2).filter((line) => /^[=+-] /.test(line));
 const SHORT = /^[^:]*: #[0-9a-f]{16} \(\d+ characters\)$/;
-const WINDOW = 100_000;
+// The routed window and output cap of these sessions, and the compaction config the launcher gives dsh by default: the
+// relief line is then 0.7 of the window (the real compaction line, 0.8, is more than one step further).
+const WINDOW = 262_144;
+const MAX_TOKENS = 32_768;
+const COMPACTION = JSON.parse(contextEnv({ reliefRatio: 0.7, compactionRatio: 0.8 }).RULITH_DSH_COMPACTION);
 const TRIGGER = Math.floor(RELIEF_RATIO * WINDOW);
+const rewriteSession = (session, options = {}) => rewrite(session, { compaction: COMPACTION, ...options });
 
 // Enough of a dsh session for the rewrite: the event log, the model-visible surface, dsh's replace records, the latest
 // request context (the routed window) and the recorded usage of each model reply.
@@ -52,7 +59,8 @@ function fakeSession() {
     get seq() { return log.length; },
     eventAt: (seq) => log[seq],
     deriveEventMessage: (event) => event.data.message ?? null,
-    requestContext: () => ({ provider: 'p', model: 'm', contextWindow: WINDOW }),
+    requestContext: () => ({ provider: 'p', model: 'm', contextWindow: session.window ?? WINDOW }),
+    requestHeader: () => ({ config: { provider: 'p', model: 'm', maxTokens: MAX_TOKENS } }),
     // One model reply with its recorded prompt size, and its tool calls.
     reply(prompt, calls_ = [{ name: 'Execute', args: {} }]) {
       const blocks = calls_.map(({ name, args }) => ({ type: 'tool-call', id: `c${++calls}`, name, arguments: JSON.stringify(args) }));
@@ -341,6 +349,36 @@ test('relief touches only Rulith results: other tool results and the assistant m
   assert.equal(session.visible()[0], 'plain text '.repeat(500));
   assert.ok(session.visible()[1].includes('"cleared"'));
   assert.equal(session.visible()[1].split('\n')[1], DELTA_HEAD);
+});
+
+test("the relief line is the session route's own: a smaller window moves it one step before dsh's real compaction line", () => {
+  const lines = [];
+  const session = fakeSession();
+  session.window = 131_072;
+  // dsh compacts at 131072 - 32768 - 16384 = 81920 here; relief at 61920, below 0.7 x 131072 = 91750.
+  const { relief } = contextLinesFor({ contextWindow: 131_072, maxTokens: MAX_TOKENS, compaction: COMPACTION });
+  assert.equal(relief, 81_920 - RELIEF_MARGIN);
+  history(20).forEach((text, i) => step(session, i === 19 ? relief : relief - 1, text, { onLines: (line) => lines.push(line) }));
+  assert.deepEqual(lines.at(-1), { provider: 'p', model: 'm', contextWindow: 131_072, maxTokens: MAX_TOKENS, relief, compaction: 81_920 });
+  assert.deepEqual(sessionLines(session, { compaction: COMPACTION }), lines.at(-1));
+  assert.equal(session.visible().filter((text) => text.endsWith(`\n${RELIEF_MARK}`)).length, 1, 'one batch at the moved line');
+});
+
+test('relief keeps the per-section layout: the line naming absent sections stays, and the rows are read back the same', () => {
+  const view = (i, scopedView) => raw({ accepted: true, result: { action: 'eng.read', output: `output ${i} `.repeat(300) },
+    view: scopedView ? { position: { step: i }, facts: Array.from({ length: 40 }, (_, k) => ({ label: `fact ${k} `.repeat(20) })) } : { position: { step: i }, goalTypes: [] },
+    operations: [{ tool: 'Execute', step: i, result: { output: `operation ${i} `.repeat(400) } }] });
+  const session = fakeSession();
+  Array.from({ length: 16 }, (_, i) => view(i, i % 2 === 0)).forEach((text, i) => step(session, i === 15 ? TRIGGER : 1000, text));
+  const visible = session.visible();
+  const boundary = visible.findIndex((text) => text.endsWith(`\n${RELIEF_MARK}`));
+  assert.ok(boundary > 0);
+  // A relieved default view still names the sections it did not carry, and no fact is listed as gone anywhere.
+  const relievedDefault = visible.slice(0, boundary + 1).find((text, i) => i % 2 === 1);
+  assert.ok(relievedDefault.split('\n')[0].includes('"cleared"'));
+  assert.equal(relievedDefault.split('\n')[2], 'Not in this view (read with Get to see them): facts');
+  assert.ok(visible.every((text) => !/^- facts: /m.test(text)));
+  assert.equal(rewriteSession(session), 0);
 });
 
 // Installed-dsh contract: dsh's real session, agent loop and llm/stream waterfall with a scripted adapter. Proves that the

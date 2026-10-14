@@ -1,38 +1,14 @@
 // 启动器（start-deep-rulith.mjs）里不读设置文件、不启动任何东西的部分，单独放在这里以便测试。
 import fs from 'node:fs';
 import path from 'node:path';
-import { RELIEF_RATIO } from './board-transcript.mjs';
-
-// 上下文的两条线（2026-10-14，所有者：两条线都按模型上下文窗口的比例定，都可在 deep-rulith.json 里设置）：
-//   - 减负线 reliefRatio（默认 RELIEF_RATIO 0.7，见 board-transcript.mjs）：最近一次请求的真实提示到了窗口的这个比例，
-//     较早的 Rulith 结果与旧回答的长参数一批减负（只在能省够 CLEAR_AT_LEAST 时）。
-//   - 压缩线 compactionRatio（默认 COMPACTION_RATIO 0.8）：dsh 的 compaction-basic 在这里把较早的对话压成摘要
-//     （摘要要解码几分钟，而且有损）。dsh 的压缩线是
-//       min(窗口 × thresholdRatio, 窗口 − 请求的 maxTokens − headroomTokens)
-//     （dsh-compaction-basic lib/index.js resolveCompactSpec）。dsh 默认 headroomTokens 65536：262144 的窗口、maxTokens 32768
-//     时后一项是 163840，比 0.8 × 窗口先起作用，所以以前实际在约 160K 压缩。这里把 thresholdRatio 设为 compactionRatio，
-//     headroomTokens 设为 COMPACTION_HEADROOM_TOKENS（16384），后一项（212992）不再先起作用，压缩线就是 0.8 × 262144 = 209715。
-//     dsh 的摘要请求的输出上限默认等于 headroomTokens，所以另设 COMPACTION_SUMMARY_MAX_TOKENS（32768，与 Agent 自己的
-//     输出上限相同）：2026-10-14 的三次摘要输出 6～8K token；而 65536 会让压缩线附近的摘要请求（被压缩的一段约 0.8 × 窗口
-//     减去保留的尾部，再加输出）贴近窗口。
-//   - 减负线必须低于压缩线，否则减负永远轮不到（启动器拒绝启动）。默认两线相差 0.1 × 窗口（262144 时约 26K token），
-//     约是一步的增长：通常先减负，减负省不够时才压缩。挪动一条线时连另一条一起看。
-//   - 只有 (1 − compactionRatio) × 窗口 ≥ maxTokens + headroomTokens 时压缩线才真是 compactionRatio × 窗口（0.8 时窗口
-//     至少 245760）；窗口更小时 dsh 在 窗口 − maxTokens − headroomTokens 处压缩。设置里给了 localContextWindow 时，
-//     启动器按这条实际的压缩线检查减负线。
-export const COMPACTION_RATIO = 0.8;
-export const COMPACTION_HEADROOM_TOKENS = 16384;
-export const COMPACTION_SUMMARY_MAX_TOKENS = 32768;
-
-/** dsh compaction-basic 的压缩线（与它的 resolveCompactSpec 同一算式）。 */
-export const compactionLine = (contextWindow, ratio, maxTokens, headroomTokens = COMPACTION_HEADROOM_TOKENS) =>
-  Math.floor(Math.min(contextWindow * ratio, contextWindow - maxTokens - headroomTokens));
+import { COMPACTION_HEADROOM_TOKENS, COMPACTION_RATIO, COMPACTION_SUMMARY_MAX_TOKENS, RELIEF_RATIO } from './context-relief.mjs';
 
 /**
- * 设置里的两条线（缺省取默认值），检查后返回；不合要求时抛错，启动器因此拒绝启动。
- * window／maxTokens：已知的本地模型窗口（localContextWindow）与请求的输出上限，给了就按 dsh 实际的压缩线检查。
+ * 设置里的两条线（deep-rulith.json 的 reliefRatio 与 compactionRatio，缺省取默认值；含义见 context-relief.mjs）。
+ * 只拒绝本身不成立的设置：比例不在 0 与 1 之间，或减负比例不小于压缩比例——这时启动器拒绝启动。窗口较小、dsh 实际的
+ * 压缩线更低时不拒绝：实际的减负线在运行时按会话的路线压到压缩线之前（board-transcript.mjs 记日志）。
  */
-export function contextLines(settings = {}, { window, maxTokens } = {}) {
+export function contextLines(settings = {}) {
   const reliefRatio = settings.reliefRatio ?? RELIEF_RATIO;
   const compactionRatio = settings.compactionRatio ?? COMPACTION_RATIO;
   for (const [name, value] of [['reliefRatio', reliefRatio], ['compactionRatio', compactionRatio]]) {
@@ -41,17 +17,13 @@ export function contextLines(settings = {}, { window, maxTokens } = {}) {
   if (reliefRatio >= compactionRatio) {
     throw new Error(`Deep Rulith: reliefRatio (${reliefRatio}) must be below compactionRatio (${compactionRatio}), or dsh compacts before context relief can act`);
   }
-  if (Number.isInteger(window) && Number.isInteger(maxTokens)) {
-    const line = compactionLine(window, compactionRatio, maxTokens);
-    if (Math.floor(reliefRatio * window) >= line) {
-      throw new Error(`Deep Rulith: with a ${window}-token window and ${maxTokens} output tokens dsh compacts at ${line} tokens, `
-        + `which is not above the relief line ${Math.floor(reliefRatio * window)} (reliefRatio ${reliefRatio}); lower reliefRatio`);
-    }
-  }
   return { reliefRatio, compactionRatio };
 }
 
-/** 交给 dsh 的环境变量：rulith-web.cordis.yml 读它们设定 rulith-runtime 的减负线与 compaction-basic 的压缩配置。 */
+/**
+ * 交给 dsh 的环境变量：rulith-web.cordis.yml 读它们设定 rulith-runtime 的减负比例，以及 dsh compaction-basic 的压缩配置
+ * （thresholdRatio、headroomTokens、摘要的输出上限；rulith-runtime 也读同一份，好算出实际的压缩线）。
+ */
 export const contextEnv = ({ reliefRatio, compactionRatio }) => ({
   RULITH_DSH_RELIEF_RATIO: String(reliefRatio),
   RULITH_DSH_COMPACTION: JSON.stringify({ thresholdRatio: compactionRatio, headroomTokens: COMPACTION_HEADROOM_TOKENS,

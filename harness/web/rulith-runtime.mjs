@@ -59,7 +59,7 @@ export async function apply(ctx, config = {}) {
   // 历史工具调用只在模型侧改名；必须先映射，再排板视图与统计已接受的 Set。
   // 模型看到的 Rulith 结果：最新一份整块板（+／- 标出变化），更早的只留变化（D-1008e）；上下文到减负线（reliefRatio ×
   // 窗口）时一批减负（见 board-transcript.mjs）。
-  installBoardTranscript(ctx, { reliefRatio: config.reliefRatio });
+  installBoardTranscript(ctx, { reliefRatio: config.reliefRatio, compaction: config.compaction });
   // 发给模型的那一份在发出前减负（会话不改）：之前轮次的思考不发，减负边界之前的调用长参数缩短（见 outgoing-trim.mjs）。
   installOutgoingTrim(ctx);
 

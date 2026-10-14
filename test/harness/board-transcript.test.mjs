@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, plan, rewriteSession, FULL_FIRST, FULL_HEAD, DELTA_HEAD, DELTA_NONE } from '../../harness/web/board-transcript.mjs';
-import { RELIEF_MARK } from '../../harness/web/outgoing-trim.mjs';
+import { classify, clearFirst, plan, rewriteSession, FULL_FIRST, FULL_HEAD, DELTA_HEAD, DELTA_NONE } from '../../harness/web/board-transcript.mjs';
+import { RELIEF_MARK } from '../../harness/web/context-relief.mjs';
 import { NOTE_PREFIX } from '../../harness/web/shadow-reviewer.mjs';
 import { projectToolCall } from '../../harness/tool-history.mjs';
 
@@ -140,16 +140,19 @@ test('an action row that differs only by description or inputSchema is unchanged
   assert.ok(changed[1].split('\n').includes('- actions: {"action":"ship","status":"ready"}'));
 });
 
-test('results rewritten before 10-09 (old headers, two-space unchanged lines) are read and moved to the new layout', () => {
+test('results laid out before 10-09 (old headers, two-space unchanged lines) are read and left as they are', () => {
   const oldFull = ['{"accepted":true}', 'Board now (whole Board; + added, - removed since your previous Board):',
     '  position.writes: "open"', '+ facts: {"label":"a"}', '  operations: []'].join('\n');
   const oldDelta = ['{"accepted":true}', 'Board changes at this step (+ added, - removed; the latest result shows the whole Board):',
     '+ position.writes: "open"', '+ operations: []'].join('\n');
   const items = [classify(oldDelta), classify(oldFull)];
-  assert.deepEqual(items.map((item) => item.kind), ['delta', 'full']);
-  const texts = plan(items);
-  assert.equal(texts[0].split('\n')[1], DELTA_HEAD);
-  assert.deepEqual(texts[1].split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"', '+ facts: {"label":"a"}', '= operations: []']);
+  assert.deepEqual(items.map((item) => [item.kind, item.legacy]), [['delta', true], ['full', false]]);
+  assert.deepEqual(plan(items), [null, null]);
+  // A new result after them: the old whole view is demoted to its changes, and the new one is compared with it.
+  const texts = plan([oldDelta, oldFull, raw(answer(['a']))].map(classify));
+  assert.equal(texts[0], null);
+  assert.deepEqual(texts[1].split('\n').slice(1), [DELTA_HEAD, '+ facts: {"label":"a"}']);
+  assert.deepEqual(texts[2].split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"', '= facts: {"label":"a"}', '= operations: []']);
 });
 
 // rulith/v4（A 包）：视图按目标改名（goals.directory、goalNodes、taskStatus 以 goal 为键、position.newGoals），
@@ -265,4 +268,87 @@ test('Rulith results without a Board get the same head; transport errors and oth
   assert.equal(visible[1], sub);
   assert.equal(visible[2], broken);
   assert.equal(rewriteSession(session), 0);
+});
+
+test('a literal "<text N>" value is shown as a text block, so every <text N> in line 1 is a reference', () => {
+  const lines = plan([classify(raw({ accepted: true, result: { note: '<text 1>', other: '<text>' }, view: { position: {} }, operations: [] }))])[0].split('\n');
+  assert.equal(lines[0], '{"accepted":true,"result":{"note":"<text 1>","other":"<text>"}}');
+  assert.deepEqual(lines.slice(1, 3), ['<text 1> result.note (1 line):', '<text 1>']);
+});
+
+test("the answer's own top-level fields are not decoded, so relief keeps only the platform's outcome fields", () => {
+  const worker = JSON.stringify({ action: 'from worker', ok: false, status: 'worker status' });
+  const head = classify(raw({ accepted: true, result: worker, teaching: 't'.repeat(2000), view: { position: {} }, operations: [] })).first;
+  assert.equal(head.split('\n')[0], JSON.stringify({ accepted: true, result: worker, teaching: '<text 1>' }));
+  assert.deepEqual(JSON.parse(clearFirst(head)), { accepted: true, cleared: `${head.length} characters of this earlier result were cleared to save context; the Board holds the state` });
+  // A relieved head keeps no field that points at a text block it no longer has.
+  const multi = classify(raw({ accepted: true, result: { action: 'eng.run', ok: true, status: 'line 1\nline 2', output: 'o'.repeat(3000) }, view: { position: {} }, operations: [] })).first;
+  assert.match(multi.split('\n')[0], /"status":"<text 1>","output":"<text 2>"/);
+  assert.deepEqual(JSON.parse(clearFirst(multi)).result, { action: 'eng.run', ok: true });
+});
+
+// D 项（2026-10-14）：视图按设计带不同的段。没带的段是“没带”，不是“消失”：每一段与最近一份带它的视图比较。
+const scoped = (facts, extra = {}) => ({ accepted: true, ...extra,
+  view: { position: { writes: 'open' }, actions: [{ action: 'eng.read', status: 'ready' }], facts: facts.map((label) => ({ label })), gaps: [{ gap: 'g' }] },
+  operations: [] });
+const plainView = (extra = {}) => ({ accepted: true, ...extra, view: { position: { writes: 'open' }, actions: [{ action: 'eng.read', status: 'ready' }], goalTypes: [] }, operations: [] });
+const ABSENT = 'Not in this view (read with Get to see them): ';
+
+test('alternating section sets give no false removals: an absent section is named, not listed as gone', () => {
+  const texts = plan([scoped(['a', 'b']), plainView(), scoped(['a', 'b']), plainView(), scoped(['a', 'b'])].map((answer) => raw(answer)).map(classify));
+  // The default view does not carry facts and gaps: no "- facts" lines, one line naming what it left out.
+  assert.deepEqual(texts[1].split('\n').slice(1), [DELTA_HEAD, `${ABSENT}facts, gaps`, '+ goalTypes: []']);
+  // The scoped view again: facts and gaps are compared with their last appearance, so nothing changed in them.
+  assert.deepEqual(texts[2].split('\n').slice(1), [DELTA_NONE, `${ABSENT}goalTypes`]);
+  assert.deepEqual(texts[3].split('\n').slice(1), [DELTA_NONE, `${ABSENT}facts, gaps`]);
+  // The latest whole view marks its sections against their last appearance as well.
+  assert.deepEqual(texts[4].split('\n').slice(1), [FULL_HEAD, `${ABSENT}goalTypes`, '= position.writes: "open"',
+    '= actions: {"action":"eng.read","status":"ready"}', '= facts: {"label":"a"}', '= facts: {"label":"b"}', '= gaps: {"gap":"g"}', '= operations: []']);
+  assert.ok(texts.every((text) => !/^- (facts|gaps): /m.test(text)));
+  // Read back, nothing changes; laid out step by step, the result is the same.
+  assert.ok(plan(texts.map(classify)).every((text) => text === null));
+});
+
+test('a section that reappears is compared with its last appearance', () => {
+  const texts = plan([scoped(['a', 'b']), plainView(), scoped(['a', 'c']), raw(plainView())].map((answer) => (typeof answer === 'string' ? answer : raw(answer))).map(classify));
+  assert.deepEqual(texts[2].split('\n').slice(1), [DELTA_HEAD, `${ABSENT}goalTypes`, '+ facts: {"label":"c"}', '- facts: {"label":"b"}']);
+  // A section that a later view empties is still compared: an empty list is a change, not an absence.
+  const emptied = plan([scoped(['a']), scoped([])].map((answer) => raw(answer)).map(classify));
+  assert.deepEqual(emptied[1].split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"', '= actions: {"action":"eng.read","status":"ready"}',
+    '+ facts: []', '- facts: {"label":"a"}', '= gaps: {"gap":"g"}', '= operations: []']);
+});
+
+test('a result is laid out when it enters and when it is demoted, then kept: no second rewrite one step later', () => {
+  // Before 10-14 a demoted result was laid out again from the rebuilt Board on the next pass, and a removal in a later
+  // section could move ahead of a change in an earlier one: one more rewrite of the same result, one step late.
+  const view = (step, facts) => ({ accepted: true, view: { position: { writes: 'open', step }, facts: facts.map((label) => ({ label })) }, operations: [] });
+  const session = fakeSession([]);
+  const add = (answer) => session.append('tool/result', { message: { role: 'tool', toolCallId: `c${session.log.length}`, content: [{ type: 'text', text: raw(answer) }] } }, { surfaceOp: 'append' });
+  add(view(1, ['a', 'old'])); rewriteSession(session);
+  add(view(2, ['a'])); rewriteSession(session);
+  const demoted = session.visible()[1];
+  assert.deepEqual(demoted.split('\n').slice(1), [FULL_HEAD, '= position.writes: "open"', '+ position.step: 2', '- position.step: 1', '= facts: {"label":"a"}', '- facts: {"label":"old"}', '= operations: []']);
+  add(view(3, ['a'])); rewriteSession(session);
+  const changes = session.visible()[1];
+  assert.deepEqual(changes.split('\n').slice(1), [DELTA_HEAD, '+ position.step: 2', '- position.step: 1', '- facts: {"label":"old"}']);
+  add(view(4, ['a']));
+  assert.equal(rewriteSession(session), 2, 'only the new result and the one it demotes');
+  assert.equal(session.visible()[1], changes);
+});
+
+test('results laid out by whole-view comparison (10-09 to 10-14) are read that way and kept', () => {
+  // As the old layout showed a default view after a scoped one: every fact "gone", then "new" again.
+  const legacy = [
+    ['{"accepted":true}', 'Board view changes at this step (+ new, - gone; unchanged lines left out; the latest result shows the whole view):',
+      '+ position.writes: "open"', '+ facts: {"label":"a"}', '+ operations: []'].join('\n'),
+    ['{"accepted":true}', 'Board view changes at this step (+ new, - gone; unchanged lines left out; the latest result shows the whole view):',
+      '+ goalTypes: []', '- facts: {"label":"a"}'].join('\n'),
+    ['{"accepted":true}', 'Board view changes at this step (+ new, - gone; unchanged lines left out; the latest result shows the whole view):',
+      '+ facts: {"label":"a"}', '- goalTypes: []'].join('\n'),
+  ];
+  const next = raw({ accepted: true, view: { position: { writes: 'open' }, facts: [{ label: 'a' }, { label: 'b' }] }, operations: [] });
+  const texts = plan([...legacy, next].map(classify));
+  assert.deepEqual(texts.slice(0, 3), [null, null, null]);
+  // The Board as the old layout implied it: facts [a], no goalTypes in the last view; goalTypes still known from before.
+  assert.deepEqual(texts[3].split('\n').slice(1), [FULL_HEAD, `${ABSENT}goalTypes`, '= position.writes: "open"', '= facts: {"label":"a"}', '+ facts: {"label":"b"}', '= operations: []']);
 });

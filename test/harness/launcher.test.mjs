@@ -5,9 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { COMPACTION_RATIO, COMPACTION_HEADROOM_TOKENS, COMPACTION_SUMMARY_MAX_TOKENS, compactionLine, contextEnv, contextLines,
-  reviewerEnv, writeReviewerEnv } from '../../harness/web/launcher-settings.mjs';
-import { RELIEF_RATIO } from '../../harness/web/board-transcript.mjs';
+import { contextEnv, contextLines, reviewerEnv, writeReviewerEnv } from '../../harness/web/launcher-settings.mjs';
+import { COMPACTION_RATIO, COMPACTION_HEADROOM_TOKENS, COMPACTION_SUMMARY_MAX_TOKENS, RELIEF_MARGIN, RELIEF_RATIO, compactionLine,
+  contextLinesFor } from '../../harness/web/context-relief.mjs';
 
 // 启动器的配置管道：deep-rulith.json 的 reliefRatio／compactionRatio → 检查 → 环境变量 → rulith-web.cordis.yml
 // （rulith-runtime 的减负线、dsh compaction-basic 的压缩配置）；以及写进 Worker 的审查路线（含 300 s 的超时）。
@@ -25,15 +25,19 @@ test('the context lines default to relief at 0.7 and compaction at 0.8 of the wi
   assert.throws(() => contextLines({ compactionRatio: 1.2 }), /compactionRatio in the settings must be a number between 0 and 1/);
 });
 
-test('dsh compacts at compactionRatio x window once headroom no longer binds; a small known window is checked against the real line', () => {
+test('dsh compacts at compactionRatio x window once headroom no longer binds; a smaller window moves relief before the real line', () => {
   // dsh: min(window x thresholdRatio, window - request maxTokens - headroomTokens).
   assert.equal(compactionLine(262144, 0.8, 32768, 65536), 163840, 'the old default headroom bound at about 160K');
-  assert.equal(compactionLine(262144, 0.8, 32768), Math.floor(0.8 * 262144));
-  assert.equal(COMPACTION_HEADROOM_TOKENS, 16384);
-  assert.deepEqual(contextLines({}, { window: 262144, maxTokens: 32768 }), { reliefRatio: 0.7, compactionRatio: 0.8 });
-  // 131072: dsh would compact at 131072 - 32768 - 16384 = 81920, below 0.7 x 131072 = 91750.
-  assert.throws(() => contextLines({}, { window: 131072, maxTokens: 32768 }), /dsh compacts at 81920 tokens, which is not above the relief line 91750/);
-  assert.deepEqual(contextLines({ reliefRatio: 0.6 }, { window: 131072, maxTokens: 32768 }), { reliefRatio: 0.6, compactionRatio: 0.8 });
+  assert.equal(compactionLine(262144, 0.8, 32768, COMPACTION_HEADROOM_TOKENS), Math.floor(0.8 * 262144));
+  const launched = JSON.parse(contextEnv(contextLines({})).RULITH_DSH_COMPACTION);
+  assert.deepEqual(contextLinesFor({ contextWindow: 262144, maxTokens: 32768, compaction: launched }), { relief: 183500, compaction: 209715 });
+  // 131072: dsh compacts at 131072 - 32768 - 16384 = 81920, below 0.7 x 131072 = 91750; relief moves one step before it.
+  assert.deepEqual(contextLinesFor({ contextWindow: 131072, maxTokens: 32768, compaction: launched }), { relief: 81920 - RELIEF_MARGIN, compaction: 81920 });
+  // The route's own output cap counts: with a smaller one dsh compacts at 0.8 x window, and relief stays one step before it.
+  assert.deepEqual(contextLinesFor({ contextWindow: 131072, maxTokens: 8192, compaction: launched }), { relief: 104857 - RELIEF_MARGIN, compaction: 104857 });
+  // Without the launcher dsh keeps its own defaults (0.8, headroom 65536).
+  assert.deepEqual(contextLinesFor({ contextWindow: 262144, maxTokens: 32768 }), { relief: 143840, compaction: 163840 });
+  assert.equal(RELIEF_MARGIN, 20000);
 });
 
 test('the lines reach dsh through the environment the overlay reads', () => {
@@ -46,7 +50,8 @@ test('the lines reach dsh through the environment the overlay reads', () => {
   assert.match(overlay, /\n {8}reliefRatio: !!js 'process\.env\.RULITH_DSH_RELIEF_RATIO \? Number\(process\.env\.RULITH_DSH_RELIEF_RATIO\) : undefined'\n/);
   assert.match(overlay, /- id: compaction-basic\n {16}name: '@deepseek-ai\/dsh-compaction-basic'\n {16}config: !!js JSON\.parse\(process\.env\.RULITH_DSH_COMPACTION \|\| '\{\}'\)\n/);
   const runtime = fs.readFileSync(path.join(web, 'rulith-runtime.mjs'), 'utf8');
-  assert.match(runtime, /installBoardTranscript\(ctx, \{ reliefRatio: config\.reliefRatio \}\)/);
+  assert.match(runtime, /installBoardTranscript\(ctx, \{ reliefRatio: config\.reliefRatio, compaction: config\.compaction \}\)/);
+  assert.match(overlay, /\n {8}compaction: !!js JSON\.parse\(process\.env\.RULITH_DSH_COMPACTION \|\| '\{\}'\)\n/);
 });
 
 // Installed-dsh contract: the overlay read in dsh's entry-list YAML dialect and its `!!js` values evaluated by the
@@ -67,10 +72,13 @@ test('installed dsh: the overlay evaluates the relief ratio and the compaction c
   try {
     delete process.env.RULITH_DSH_RELIEF_RATIO; delete process.env.RULITH_DSH_COMPACTION;
     assert.equal(interpolate({}, runtime).reliefRatio, undefined, 'without the launcher: the defaults');
+    assert.deepEqual(interpolate({}, runtime).compaction, {});
     assert.deepEqual(interpolate({}, compaction), {});
     Object.assign(process.env, contextEnv({ reliefRatio: 0.65, compactionRatio: 0.85 }));
+    const want = { thresholdRatio: 0.85, headroomTokens: COMPACTION_HEADROOM_TOKENS, maxTokens: COMPACTION_SUMMARY_MAX_TOKENS };
     assert.equal(interpolate({}, runtime).reliefRatio, 0.65);
-    assert.deepEqual(interpolate({}, compaction), { thresholdRatio: 0.85, headroomTokens: COMPACTION_HEADROOM_TOKENS, maxTokens: COMPACTION_SUMMARY_MAX_TOKENS });
+    assert.deepEqual(interpolate({}, runtime).compaction, want, 'rulith-runtime reads the same compaction config as dsh');
+    assert.deepEqual(interpolate({}, compaction), want);
   } finally {
     for (const [key, value] of [['RULITH_DSH_RELIEF_RATIO', saved.relief], ['RULITH_DSH_COMPACTION', saved.compaction]]) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
@@ -100,7 +108,9 @@ test('the launcher passes the context lines to dsh, and refuses to start when re
   assert.equal(ok.run.status, 0, ok.run.stderr);
   assert.equal(ok.started.env.RULITH_DSH_RELIEF_RATIO, '0.65');
   assert.equal(JSON.parse(ok.started.env.RULITH_DSH_COMPACTION).thresholdRatio, 0.85);
-  const defaults = launch({});
+  // A small local window is not refused: the relief line is moved before dsh's real compaction line at run time.
+  const defaults = launch({ localContextWindow: 131072 });
+  assert.equal(defaults.run.status, 0, defaults.run.stderr);
   assert.equal(defaults.started.env.RULITH_DSH_RELIEF_RATIO, '0.7');
   assert.equal(JSON.parse(defaults.started.env.RULITH_DSH_COMPACTION).thresholdRatio, 0.8);
   const refused = launch({ reliefRatio: 0.9 });
