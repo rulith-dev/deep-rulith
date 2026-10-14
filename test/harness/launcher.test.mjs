@@ -187,23 +187,23 @@ test('the launcher passes the context lines to dsh, and refuses to start when re
   assert.equal(refused.started, null, 'dsh is not started');
 });
 
-test("the platform reviewer's route in each enabled Worker's worker.env includes the 300 s timeout", () => {
+test("the platform reviewer's route in each enabled Worker's worker.env drops the old 300 s timeout", () => {
   const home = temp();
   const instance = (name, local) => {
     fs.mkdirSync(path.join(home, 'instances', name), { recursive: true });
     if (local) fs.writeFileSync(path.join(home, 'instances', name, 'local.json'), JSON.stringify(local));
   };
-  instance('on', { worker: { enabled: true, env: { RULITH_TOOLS_FILE: 'tools.json', RULITH_REVIEWER_MAX_TOKENS: '8000' } }, agent: { env: { RULITH_TOKEN: 't' } } });
+  instance('on', { worker: { enabled: true, env: { RULITH_TOOLS_FILE: 'tools.json', RULITH_REVIEWER_MAX_TOKENS: '8000', RULITH_REVIEWER_TIMEOUT_MS: '300000' } }, agent: { env: { RULITH_TOKEN: 't' } } });
   instance('off', { worker: { enabled: false, env: {} } });
   instance('empty', null);
   const want = reviewerEnv({ baseURL: 'http://127.0.0.1:8091/v1', modelId: 'qwen', key: 'k' });
   assert.deepEqual(want, { RULITH_REVIEWER_URL: 'http://127.0.0.1:8091/v1/chat/completions', RULITH_REVIEWER_MODEL: 'qwen',
-    RULITH_REVIEWER_KEY: 'k', RULITH_REVIEWER_MAX_TOKENS: '16000', RULITH_REVIEWER_TIMEOUT_MS: '300000',
+    RULITH_REVIEWER_KEY: 'k', RULITH_REVIEWER_MAX_TOKENS: '16000', RULITH_REVIEWER_TIMEOUT_MS: undefined,
     RULITH_REVIEWER_REQUEST_EXTRA: undefined });
   assert.equal(writeReviewerEnv(home, want), 1);
   const on = JSON.parse(fs.readFileSync(path.join(home, 'instances', 'on', 'local.json'), 'utf8'));
   assert.deepEqual(on.worker.env, { RULITH_TOOLS_FILE: 'tools.json', RULITH_REVIEWER_URL: want.RULITH_REVIEWER_URL,
-    RULITH_REVIEWER_MODEL: 'qwen', RULITH_REVIEWER_KEY: 'k', RULITH_REVIEWER_MAX_TOKENS: '16000', RULITH_REVIEWER_TIMEOUT_MS: '300000' });
+    RULITH_REVIEWER_MODEL: 'qwen', RULITH_REVIEWER_KEY: 'k', RULITH_REVIEWER_MAX_TOKENS: '16000' });
   assert.deepEqual(on.agent, { env: { RULITH_TOKEN: 't' } });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'instances', 'off', 'local.json'), 'utf8')).worker.env, {});
   assert.equal(writeReviewerEnv(home, want), 0, 'already written: nothing to do');
