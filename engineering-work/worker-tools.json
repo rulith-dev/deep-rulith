@@ -112,7 +112,11 @@
         "pass": [
           "ENG_KIT_HOME"
         ]
-      }
+      },
+      "content": [
+        "text",
+        "expect_digest"
+      ]
     },
     "eng.patch_file@1": {
       "adapter": "run",
@@ -150,7 +154,12 @@
         "pass": [
           "ENG_KIT_HOME"
         ]
-      }
+      },
+      "content": [
+        "old_text",
+        "text",
+        "expect_digest"
+      ]
     },
     "eng.run@1": {
       "adapter": "run",
