@@ -165,3 +165,17 @@ test('a rulith/v4 answer is laid out the same way: goal directory, goal nodes an
     '= goals.total: 1', '+ goalNodes: {"goal":"g-1","met":true}', '- goalNodes: {"goal":"g-1","met":false}',
     '+ taskStatus: {"goal":"g-1","certified":true}', '- taskStatus: {"goal":"g-1","certified":false}', '= operations: []']);
 });
+
+test('a very long line that is gone is shown by a short identity, and history still replays', () => {
+  const big = 'x'.repeat(5000);
+  const first = { ...answer(['a']), operations: [{ tool: 'Execute', result: { teaching: big } }] };
+  const second = { ...answer(['a']), operations: [{ tool: 'Execute', state: 'done' }] };
+  const texts = plan([raw(first), raw(second)].map(classify));
+  const gone = texts[1].split('\n').filter((line) => line.startsWith('- operations:'));
+  assert.equal(gone.length, 1);
+  assert.match(gone[0], /^- operations: #[0-9a-f]{16} \(\d+ characters\)$/);
+  assert.ok(!texts[1].includes(big));
+  // The rewritten texts replay to the same result: a second pass over them changes nothing.
+  const again = plan(texts.map((text, index) => classify(texts[index] ?? text)));
+  assert.ok(again.every((text) => text === null));
+});

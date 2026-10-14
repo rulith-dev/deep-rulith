@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 // Deep Rulith 的板视图转录（D-1008e，所有者 2026-10-08 批准沿用最初 galaxy-core 的 delta-history 设计）。
 //
 // Rulith 每个工具结果都带当时整块板（view）和操作条（operations）。原样留在对话里，几十份几乎相同的板叠在一起：
@@ -68,19 +69,31 @@ const expand = (counts) => [...counts].flatMap(([line, n]) => Array(n).fill(line
 const section = (line) => line.slice(0, line.indexOf(': '));
 
 /**
+ * 很长的一行（例如操作栏里补交的一份旧结果）以“段名 + 摘要 + 长度”作身份。消失的行显示的是身份，所以模型看到的是
+ * “- operations: #… (106197 characters)”，而不是把同一大块再抄一遍（2026-10-14：一份约 10 万字符的旧视图在两次压缩后仍占满上下文）。
+ * 新增与未变的行照原样显示；由改写后的文本重算上一份板时，短身份按原样就是它自己的身份，重算结果不变。
+ */
+export const LONG_LINE = 2000;
+const LONG_IDENTITY = /^[^:]*: #[0-9a-f]{16} \(\d+ characters\)$/;
+function longIdentity(line) {
+  if (line.length <= LONG_LINE || LONG_IDENTITY.test(line)) return line;
+  return `${section(line)}: #${createHash('sha256').update(line).digest('hex').slice(0, 16)} (${line.length} characters)`;
+}
+
+/**
  * 比较用的身份：动作行去掉说明部分 description 与 inputSchema（只有 Get 的结果带它们，其他结果不带；它们是同一个
  * 动作定义的另一种渲染，不是板的变化）。显示仍用原行，所以带说明的结果照样给模型看。其余行的身份就是行本身。
  */
 export function identity(line) {
-  if (!line.startsWith('actions: ')) return line;
+  if (!line.startsWith('actions: ')) return longIdentity(line);
   try {
     const row = JSON.parse(line.slice('actions: '.length));
-    if (!row || typeof row !== 'object' || Array.isArray(row)) return line;
-    if (!Object.hasOwn(row, 'inputSchema') && !Object.hasOwn(row, 'description')) return line;
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return longIdentity(line);
+    if (!Object.hasOwn(row, 'inputSchema') && !Object.hasOwn(row, 'description')) return longIdentity(line);
     const { inputSchema: _schema, description: _description, ...rest } = row;
-    return `actions: ${JSON.stringify(rest)}`;
+    return longIdentity(`actions: ${JSON.stringify(rest)}`);
   } catch {
-    return line;
+    return longIdentity(line);
   }
 }
 
@@ -167,6 +180,7 @@ const acceptedBatch = (item) => {
 
 export function plan(items) {
   let prev = null; // 上一份板的多重集（行 → 次数）
+  const lineOf = new Map(); // 身份 → 最近一次显示的原行（长行的身份是短摘要，重算时要还原出原行）
   let sinceWrite = 0;
   for (const item of items) sinceWrite = acceptedBatch(item) ? 0 : sinceWrite + 1;
   return items.map((item, index) => {
@@ -185,18 +199,19 @@ export function plan(items) {
         const next = new Map(prev ?? []);
         for (const row of parsed.rows) {
           const key = identity(row.line);
-          if (row.mark === '+') next.set(key, (next.get(key) ?? 0) + 1);
+          if (row.mark === '+') { next.set(key, (next.get(key) ?? 0) + 1); lineOf.set(key, row.line); }
           else if (row.mark === '-') {
             const left = (next.get(key) ?? 0) - 1;
             if (left > 0) next.set(key, left); else next.delete(key);
           }
         }
-        curr = expand(next);
+        curr = expand(next).map((key) => lineOf.get(key) ?? key);
       }
     }
     const note = last && sinceWrite >= WRITE_NOTE_AFTER ? `\n${writeNote(sinceWrite)}` : '';
     const advisory = item.notes?.length ? '\n' + item.notes.join('\n') : '';
     const wanted = (last ? renderFull(first, curr, prev) + note : renderDelta(first, curr, prev)) + advisory;
+    for (const line of curr) lineOf.set(identity(line), line);
     prev = countLines(curr.map(identity));
     return wanted === item.text + advisory ? null : wanted;
   });
