@@ -9,10 +9,12 @@ export const inject = ['tools'];
 export const surfaceAccepted = (listed) => !listed?.nextCursor && Array.isArray(listed?.tools) && listed.tools.length === TOOLS.length
   && new Set(listed.tools.map(t => t.name)).size === TOOLS.length && TOOLS.every(t => listed.tools.some(x => x.name === t));
 export class RulithMcp {
-  constructor({ url, token, fetchImpl = fetch, identity = () => {}, timeoutMs = 75_000, ceilingMs = 600_000 }) {
+  constructor({ url, token, conversationKey, fetchImpl = fetch, identity = () => {}, timeoutMs = 75_000, ceilingMs = 600_000 }) {
     const endpoint = new URL(url);
     if ((endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('MCP endpoint refused');
     if (!token) throw new Error('Agent token required');
+    if (conversationKey !== undefined && (typeof conversationKey !== 'string' || !conversationKey || conversationKey.length > 200 || /[^\x21-\x7e]/.test(conversationKey))) throw new Error('MCP conversation key refused');
+    Object.defineProperty(this, 'conversationKey', { value: conversationKey });
     this.url = url; this.token = token; this.fetch = fetchImpl; this.identity = identity;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(ceilingMs) || ceilingMs < timeoutMs) throw new Error('MCP wait bounds refused');
     this.timeoutMs = timeoutMs; this.ceilingMs = ceilingMs;
@@ -40,6 +42,7 @@ export class RulithMcp {
     const id = ++this.nextId;
     const headers = { authorization: `Bearer ${this.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-protocol-version': PROTOCOL };
     if (this.session) headers['mcp-session-id'] = this.session;
+    if (this.conversationKey !== undefined) headers['X-Rulith-Conversation'] = this.conversationKey;
     let response;
     try { response = await this.fetch(this.url, { method: 'POST', headers, redirect: 'error', signal, body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }) }); }
     catch { this.closed = true; throw new Error('MCP transport failed'); }
@@ -86,7 +89,7 @@ export class RulithMcp {
   }
   initialize() {
     return this.serial(async () => {
-      // Every hand uses the one main session. Held calls carry a progress token and outlive the hold bound.
+      // Every hand on this Board shares this session. Held calls carry a progress token and outlive the hold bound.
       const capabilities = { experimental: { [NAMESPACE]: { heldCalls: 1 } } };
       const result = await this.request('initialize', { protocolVersion: PROTOCOL, capabilities, clientInfo: { name: 'rulith-dsh', version: '0.11.0' } });
       if (result.protocolVersion !== PROTOCOL || !this.session || !this.agentId) { this.closed = true; throw new Error('MCP handshake refused'); }

@@ -178,4 +178,6 @@ test('Board panel renders the cached view, operations, receipt time and empty st
   assert.ok(received.includes('cached operation'));
   assert.ok(received.includes('最近收到 Board：' + new Date(seenAt).toLocaleString()));
   assert.deepEqual(texts(render(cwd, { ok: true, available: true })), ['还没有 Board 视图。']);
+  assert.deepEqual(texts(render(cwd, { ok: true, available: true, agentName: 'fixture', liveConversations: 2 })),
+    ['Rulith · fixture', '已连接会话：2', '刷新']);
 });

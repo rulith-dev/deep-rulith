@@ -3,6 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { COMPACTION_HEADROOM_TOKENS, COMPACTION_RATIO, COMPACTION_SUMMARY_MAX_TOKENS, RELIEF_RATIO } from './context-relief.mjs';
 
+export function conversationBoards(settings = {}, env = process.env) {
+  const value = settings.conversationBoards;
+  if (value !== undefined && typeof value !== 'boolean') {
+    throw new Error(`Deep Rulith: conversationBoards in the settings must be a boolean (got ${JSON.stringify(value)})`);
+  }
+  return value !== false && env.RULITH_DSH_CONVERSATION_BOARDS !== '0';
+}
+
 /**
  * 设置里的两条线（deep-rulith.json 的 reliefRatio 与 compactionRatio，缺省取默认值；含义见 context-relief.mjs）。
  * 只拒绝本身不成立的设置：比例不在 0 与 1 之间，或减负比例不小于压缩比例——这时启动器拒绝启动。窗口较小、dsh 实际的

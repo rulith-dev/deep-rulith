@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { contextEnv, contextLines, REVIEWER_REQUEST_RESERVED_KEYS, reviewerEnv, reviewerRequestExtra, writeReviewerEnv }
+import { conversationBoards, contextEnv, contextLines, REVIEWER_REQUEST_RESERVED_KEYS, reviewerEnv, reviewerRequestExtra, writeReviewerEnv }
   from '../../harness/web/launcher-settings.mjs';
 import { COMPACTION_RATIO, COMPACTION_HEADROOM_TOKENS, COMPACTION_SUMMARY_MAX_TOKENS, RELIEF_MARGIN, RELIEF_RATIO, compactionLine,
   contextLinesFor } from '../../harness/web/context-relief.mjs';
@@ -15,6 +15,15 @@ import { COMPACTION_RATIO, COMPACTION_HEADROOM_TOKENS, COMPACTION_SUMMARY_MAX_TO
 
 const web = fileURLToPath(new URL('../../harness/web/', import.meta.url));
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'deep-rulith-launcher-'));
+
+test('conversation Boards default on; the setting and environment can each turn them off', () => {
+  assert.equal(conversationBoards({}, {}), true);
+  assert.equal(conversationBoards({ conversationBoards: true }, {}), true);
+  assert.equal(conversationBoards({ conversationBoards: false }, {}), false);
+  assert.equal(conversationBoards({}, { RULITH_DSH_CONVERSATION_BOARDS: '0' }), false);
+  assert.equal(conversationBoards({ conversationBoards: true }, { RULITH_DSH_CONVERSATION_BOARDS: '0' }), false);
+  for (const bad of [null, 'false', 0, [], {}]) assert.throws(() => conversationBoards({ conversationBoards: bad }, {}), /must be a boolean/);
+});
 
 test('the context lines default to relief at 0.7 and compaction at 0.8 of the window, and relief must come first', () => {
   assert.deepEqual(contextLines({}), { reliefRatio: RELIEF_RATIO, compactionRatio: COMPACTION_RATIO });
@@ -88,7 +97,7 @@ test('installed dsh: the overlay evaluates the relief ratio and the compaction c
 });
 
 // The launcher itself, with a stand-in for dsh that records the environment it was started with.
-function launch(settings, modelDefaults) {
+function launch(settings, modelDefaults, extraEnv = {}) {
   const dir = temp();
   const out = path.join(dir, 'dsh-env.json');
   const fakeDsh = path.join(dir, 'fake-dsh.mjs');
@@ -99,11 +108,24 @@ function launch(settings, modelDefaults) {
   if (modelDefaults) fs.writeFileSync(path.join(s.managerHome, 'model-defaults.json'), JSON.stringify({ defaults: modelDefaults }));
   const file = path.join(dir, 'deep-rulith.json');
   fs.writeFileSync(file, JSON.stringify(s));
-  const run = spawnSync(process.execPath, [path.join(web, 'start-deep-rulith.mjs'), file], { env: { ...process.env, FAKE_DSH_OUT: out }, encoding: 'utf8', timeout: 30_000 });
+  const run = spawnSync(process.execPath, [path.join(web, 'start-deep-rulith.mjs'), file], { env: { ...process.env, RULITH_DSH_CONVERSATION_BOARDS: '1', ...extraEnv, FAKE_DSH_OUT: out }, encoding: 'utf8', timeout: 30_000 });
   const started = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : null;
   fs.rmSync(dir, { recursive: true, force: true });
   return { run, started };
 }
+
+test('the launcher passes conversationBoards to the runtime and rejects invalid settings before dsh starts', () => {
+  for (const [settings, env, expected] of [[{}, {}, '1'], [{ conversationBoards: false }, {}, '0'],
+    [{ conversationBoards: true }, { RULITH_DSH_CONVERSATION_BOARDS: '0' }, '0']]) {
+    const ok = launch(settings, undefined, env);
+    assert.equal(ok.run.status, 0, ok.run.stderr);
+    assert.equal(ok.started.env.RULITH_DSH_CONVERSATION_BOARDS, expected);
+  }
+  const refused = launch({ conversationBoards: 'false' });
+  assert.notEqual(refused.run.status, 0);
+  assert.match(refused.run.stderr, /conversationBoards in the settings must be a boolean/);
+  assert.equal(refused.started, null);
+});
 
 test('reviewerThinking and reviewerRequestExtra become the reviewer request extra; anything else is refused', () => {
   assert.equal(reviewerRequestExtra({}), undefined, 'absent: send nothing');

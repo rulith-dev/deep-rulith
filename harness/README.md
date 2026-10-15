@@ -4,15 +4,16 @@
 | --- | --- |
 | `web/rulith-web.cordis.yml` | Overlay for dsh's web profile: disables dsh's local tools except the read-only `web_search` and `web_fetch` (D-1015c), tool presets, DeepSeek account, feedback, telemetry and session upload, and its own file browser and terminal (they act on dsh's workspace folder outside Rulith); adds the tool-free preset `rulith` and the plugins below. It does not set the model (see the launcher). |
 | `web/rulith-runtime.mjs` | Host plugin. Starts or attaches the Rulith Runtime manager, registers the three Rulith MCP tools (`rulith/v4`) for the selected Agent, waits for held calls to settle, and serves `/rulith/api/*` (same-origin header and loopback Host required) for the browser half. |
+| `web/conversation-boards.mjs` | Owns each conversation's lazy MCP bridge, patient reconnect, Board channel, focused goals, cached Board and shadow history; releases them on dsh session disposal. |
 | `web/shadow-reviewer.mjs` | Board-only allow/note/block review before every write on the shared channel; no separate session. |
 | `web/board-transcript.mjs` | Before each model request, lays out the Rulith results the model sees: the latest shows the whole view one item per line, earlier ones keep only their changes. The parts a goal read includes (the nodes group: facts, findings, goalNodes, total, rootScope; the gaps group) are compared with the last view that had them, and a view that lacks one is named, not listed as gone; every other key is compared with the previous view. A result's head is one line of JSON with nested JSON strings decoded and long or multi-line text as labelled blocks. A result is laid out when it arrives and when it is demoted, then kept. When the prompt dsh recorded reaches the relief line, older results are relieved in one batch that must free at least 20000 tokens; the batch's boundary is a marked Board result (the person's transcript keeps the originals; see `model-visible.md`). |
 | `web/outgoing-trim.mjs` | Trims only the copy of each request that goes out to the model, at dsh's `llm/stream` waterfall: no reasoning from before the latest message from a person, and long string arguments of calls before the latest context-relief boundary (a marked Board result, recognised by `board-transcript.mjs`) shortened to a head and a digest. The session is not changed; a failure or a request path that bypasses it is logged once per conversation. |
 | `web/rulith-web-gate.mjs` | Restricts children to the three Rulith tools and the web tools, at depth 1; the main agent also has delegation and control tools. |
-| `web/rulith-dsh-ui/` | Browser plugin: the Rulith account entry (bottom left) and, as in the Rulith Runtime's three columns, the right column of every session: goals, recent operations, the current frontier and the local Worker's activity, with the Source bindings Console locked. It holds no key: the workbench link is fetched on demand through `/rulith/api/workbench`. |
+| `web/rulith-dsh-ui/` | Browser plugin: the Rulith account entry (bottom left) and, as in the Rulith Runtime's three columns, the right column of every session: the Board of the conversation the pane is mounted for (goals, recent operations, the current frontier) and the local Worker's activity, with the Source bindings Console locked. It holds no key: the workbench link is fetched on demand through `/rulith/api/workbench`. |
 | `web/start-deep-rulith.mjs` | Launcher. Reads the settings file, takes the model from Rulith's model settings and keeps it as the route `rulith-model` in the profile's own `cordis.patch.yml` (the layer dsh's Models page edits, so providers added there survive restarts; the default model points at `rulith-model` until the person picks another), then starts dsh's web profile with the overlay. The model key is passed only in the child's environment. It also passes the two context lines from the settings, `reliefRatio` (default 0.7) and `compactionRatio` (default 0.8, dsh's compaction), refusing to start only when the ratios are invalid in themselves, and writes the platform reviewer's route into each enabled Worker's `worker.env`. |
 | `web/launcher-settings.mjs` | The launcher's pure parts: the ratio check, the environment that carries the lines to the overlay, and the reviewer's `worker.env` lines, including the optional request extra from `reviewerThinking` or `reviewerRequestExtra`. |
 | `web/context-relief.mjs` | The context-relief rules shared by `board-transcript.mjs`, `outgoing-trim.mjs` and the launcher: the two lines (each route's effective lines follow its window and output cap: relief stays at least 20000 tokens before dsh's real compaction line), the relief mark, and how a long argument is shortened. |
-| `rulith-mcp.mjs` | The only MCP client: one main session for every hand, declaring `rulith/v4` at initialize; HTTP MCP. |
+| `rulith-mcp.mjs` | The only MCP client: one session for every hand on a Board, declaring `rulith/v4` at initialize; HTTP MCP. An optional immutable conversation key is sent on every request. |
 | `rulith-gate.mjs` | Gate addendum text; restricts the headless agent to the three Rulith tools and the web tools. |
 | `web-tools.mjs` | D-1015c: the native read-only web tools (`web_search`, `web_fetch`) beside Rulith's three. `web_search` only with DeepSeek's own key (`RULITH_DSH_WEB_SEARCH_KEY`, passed only when Rulith's model is `https://api.deepseek.com`, and the search endpoint is pinned to DeepSeek's); without it it is not registered. Before dsh fetches, a `tools/execute` guard refuses non-http(s) URLs and hosts that are or resolve to loopback, private, shared (100.64/10) or link-local addresses. |
 | `runtime-persona.txt` | Persona snapshot. |
@@ -43,6 +44,39 @@ keeps waiting until the call settles. `RULITH_DSH_WAIT_SECONDS` sets an optional
 
 Headless disables delegation and shadow because its caps and main-turn lifetime cannot account for those extra calls.
 
+## Conversation Boards (D-1015b)
+
+Web conversations use separate Boards by default. The exact key is `dsh:<session.id>` for a top-level conversation.
+A delegated child instead uses `dsh:<session.header.parentSession>`. Delegation means the maximum of persisted
+`header.delegationDepth`, live `options.subagentDepth`, and 1 when `header.origin === 'subagent'` is positive.
+Depth is limited to 1 by admission. A user fork has `parentSession` (seed lineage) but no origin/delegation depth;
+it therefore owns `dsh:<its own session.id>`, and its children use that fork's key. No random or process-local
+identifier enters the key, so cold resume and launcher restart preserve it. Missing, empty, non-printable, non-ASCII,
+space-containing or over-196-character session ids are refused; the `dsh:` prefix keeps the key within 200 characters.
+
+This relies on installed dsh's `dsh-subagent/lib/index.js` `childSessionMeta`: it writes `parentSession`,
+`origin: 'subagent'` and `delegationDepth`. `dsh-session/lib/index.js` `fork` writes `parentSession` and `isSeeded`
+without delegation metadata. `isSeeded` alone does not identify a child: both a user fork and `subagent_fork` can be seeded.
+
+Agent selection, credentials and tool registration stay launcher-wide. Attachment briefly opens a headerless MCP
+connection solely to discover the authority's unchanged tool schemas, then closes it. Each conversation's first
+Rulith call opens its own MCP session, sending `X-Rulith-Conversation` on initialize, initialized notification,
+tool listing and every tool call. Main and delegated children share the channel; unrelated conversations have
+independent FIFOs, operation slots, focused goals, Board caches, block counters and shadow history. Reconnect
+keeps the key and channel, shares concurrent attempts, and backs off from 2 to 30 seconds within
+`RULITH_DSH_RECONNECT_PATIENCE_MS` (default 180000). A failed Get can be repeated; an uncertain write is never replayed.
+
+`session/disposed` releases that session's ownership; the last parent/child owner closes the Board channel,
+shadow and bridge and cancels in-progress connection/backoff. Agent detach closes all of its channels. Reopening
+recreates local state with the same key. Transcript, relief and outgoing trim derive their Board state from each
+dsh session's own log/messages; no shared Board cache exists there and their rendering is unchanged.
+The Agent-wide panel and `rulith-runtime-status.json` expose counts, never conversation keys or credentials.
+
+Set launcher `conversationBoards` to `false`, or set `RULITH_DSH_CONVERSATION_BOARDS=0`, to use the shared default
+Board and omit the header. The environment switch wins even over an explicit `true`; non-boolean settings refuse
+startup. The shared connection then lives until Agent detach. Headless mode retains its existing behavior.
+Old Gateways may ignore the header; Gateway-side Board isolation requires the parallel D-1015b Gateway change.
+
 D-1013a: the web main agent delegates with dsh's subagent and subagent_fork, and can send_message or interrupt_agent.
 Children inherit the main provider/model and have exactly Get, Set, Execute (and the web tools, D-1015c), at depth 1. Background calls use dsh's
 continuable driver; run_in_background:false uses one-shot. dsh's own maxActiveSubagents is 4; the gate additionally
@@ -52,7 +86,7 @@ Stock presets and shell/file/plugin-manager/job tools remain disabled; every han
 
 ## One Board channel and shadow (D-1013a)
 
-board-channel.mjs owns one FIFO for all hands and shadow calls on the main MCP bridge. The panel refreshes only
+board-channel.mjs owns one FIFO per Board for its hands and shadow calls on that Board's MCP bridge. In legacy mode the panel refreshes only
 the host's local cache of the latest tool result's Board view and operations strip, with its receipt time;
 before the first Board-bearing result it shows no view. Panel reads never send MCP calls. Review reads,
 inference and the initial write form one queue entry, keeping the Board and proposed step adjacent. Once the authority
@@ -61,7 +95,7 @@ suggestion write; other operations wait outside the FIFO while plain Gets and po
 by tool/label/at on the main line; a settled outcome delivered by any other hand is retained for the original requester.
 No seat selection, preset generation, per-seat bridge or shadow MCP session remains. Platform admission still permits
 only one operation in progress; parallel local thinking does not grant parallel writes in Rulith.
-Outcomes belong to the Agent, not a hand: a settled outcome may also appear in another hand's operations strip,
+Outcomes belong to the Board: a settled outcome may also appear in another hand's operations strip on that Board,
 and a waiting_for_decision outcome reaches whichever hand calls next.
 
 In web mode Set always reviews. Execute uses the current authority Action kind when present; Runtime 0.15.1 normally exposes the

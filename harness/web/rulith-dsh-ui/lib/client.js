@@ -168,6 +168,9 @@ window.__ModuleLoader__.load({
       if (!data) return h("div", { style: { padding: 12 } }, "正在读取 Rulith…");
       if (!data.ok) return h("div", { style: { padding: 12, color: AMBER } }, data.teaching || "读不到 Rulith");
       if (!data.available) return h("div", { style: { padding: 12 } }, "还没有接入 Rulith：请在左下角登录并选择 Agent。");
+      if (data.liveConversations !== undefined) return h("div", { style: { padding: 12 } },
+        h("b", null, "Rulith · " + (data.agentName || "")),
+        h("p", null, "已连接会话：" + data.liveConversations), h("button", { style: button, onClick: reload }, "刷新"));
       if (!data.view) return h("div", { style: { padding: 12 } }, "还没有 Board 视图。");
       const board = data.view;
       const directory = board.goals && Array.isArray(board.goals.directory) ? board.goals.directory : [];

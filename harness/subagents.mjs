@@ -6,7 +6,14 @@ import { offeredWebTools } from './web-tools.mjs';
 export const DELEGATION_TOOLS = Object.freeze(['subagent', 'subagent_fork', 'send_message', 'interrupt_agent']);
 export const MAX_CHILDREN = 4;
 export const depthOf = (agent) => Math.max(agent?.session?.header?.delegationDepth ?? 0, agent?.options?.subagentDepth ?? 0,
-  agent?.session?.header?.parentSession ? 1 : 0);
+  agent?.session?.header?.origin === 'subagent' ? 1 : 0);
+// parentSession alone is seed lineage (a user fork), not delegation. Depth is durable on cold resume.
+export function conversationKey(agent) {
+  const session = agent?.session;
+  const id = depthOf(agent) ? session?.header?.parentSession : session?.id;
+  if (typeof id !== 'string' || !id || id.length > 196 || /[^\x21-\x7e]/.test(id)) throw new Error('Rulith conversation session id refused');
+  return `dsh:${id}`;
+}
 export const handOf = (agent) => depthOf(agent) ? agent.session.id : 'main';
 /** Every hand has Rulith's three and the registered read-only web tools (D-1015c); only the main agent delegates. */
 export const toolsOf = (agent, web = []) => depthOf(agent) ? [...TOOLS, ...web] : [...TOOLS, ...DELEGATION_TOOLS, ...web];

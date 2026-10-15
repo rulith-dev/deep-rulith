@@ -14,8 +14,10 @@ import { installOutgoingTrim } from './outgoing-trim.mjs';
 import { installProjectContext, readSourceBindings, resolveProject } from './project-source.mjs';
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
-import { BoardChannel, readToolKinds, renderChannelResult } from '../board-channel.mjs';
+import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
 import { handOf } from '../subagents.mjs';
+import { ConversationBoards } from './conversation-boards.mjs';
+import { conversationBoards } from './launcher-settings.mjs';
 export { awaitOutcome } from '../board-channel.mjs';
 
 export const name = 'rulith-runtime';
@@ -24,7 +26,9 @@ export const inject = ['tools', 'webServer', 'llm'];
 /** The panel observes results already received on this Agent's channel; it never calls MCP. */
 export function cachedBoard(current, status) {
   if (!current) return { available: false, tools: status };
-  return { available: true, agentName: current.agentName, ...current.channel.latestBoard };
+  if (current.boards?.enabled) return { available: true, agentName: current.agentName, liveConversations: current.boards.size };
+  const channel = current.channel ?? current.boards?.holders.get(undefined)?.channel;
+  return { available: true, agentName: current.agentName, ...channel?.latestBoard };
 }
 
 const listening = (port) => new Promise((resolve) => {
@@ -45,6 +49,7 @@ export function selectedAgent(home, agentName) {
 }
 
 export async function apply(ctx, config = {}) {
+  const separateBoards = conversationBoards(config);
   const home = config.managerHome;
   const port = Number(config.managerPort ?? 7790);
   if (!home || !config.runtimeEntry || !config.keyFile) throw new Error('rulith-runtime needs managerHome, runtimeEntry and keyFile');
@@ -91,80 +96,51 @@ export async function apply(ctx, config = {}) {
   //    over that (2026-10-06: a read failing during a network blip closed the connection, the tools were unregistered
   //    and re-registered, the model got "unknown tool" and gave up its turn).
   let current = null;
+  const sessions = new Map();
   let status = { state: 'starting' };
   const report = (state, detail = {}) => {
-    status = { state, at: new Date().toISOString(), ...detail };
+    status = { state, at: new Date().toISOString(), liveConversations: current?.boards?.size ?? 0, ...detail };
     try { fs.writeFileSync(statusFile, JSON.stringify(status, null, 2)); } catch {}
   };
   const drop = () => {
     if (!current) return;
     for (const dispose of current.disposers) dispose();
-    current.channel.close();
-    current.bridge.close();
+    current.boards.close();
     current = null;
   };
-  const connect = async (token) => {
-    const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, identity() {} });
+  const connect = async (token, conversationKey, signal) => {
+    const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, conversationKey, identity() {} });
+    const abort = () => bridge.close();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     try {
       await bridge.initialize();
       const listed = await bridge.list();
       if (!surfaceAccepted(listed)) throw new Error('MCP tool surface refused');
       return { bridge, listed };
     } catch (error) { bridge.close(); throw error; }
-  };
-  const TRANSIENT = /^(MCP transport failed|MCP request refused|MCP response unreadable|MCP connection closed|connection_replaced)$/;
-  // While the Gateway restarts (the daily stop-writers backup, a release swap) connections are refused for a minute or two.
-  // Reconnect with backoff for up to RULITH_DSH_RECONNECT_PATIENCE_MS (default 3 minutes) before a call fails to the model;
-  // otherwise the model retries a dozen times within that minute and gives up (an explorer run on 2026-10-15 did exactly that).
-  const patienceMs = Number(process.env.RULITH_DSH_RECONNECT_PATIENCE_MS ?? 180000);
-  const connectPatiently = async (holder) => {
-    const until = Date.now() + patienceMs;
-    for (let delay = 2000; ; delay = Math.min(delay * 2, 30000)) {
-      try { return await connect(holder.token); }
-      catch (error) {
-        if (!TRANSIENT.test(String(error?.message ?? '')) || current !== holder || Date.now() + delay > until) throw error;
-        report('reconnecting', { agentName: holder.agentName, reason: String(error.message), retryInMs: delay });
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-  };
-  // One replacement attempt for the one main session; queued requests keep their order across reconnect.
-  let reconnecting = null;
-  const liveBridge = async () => {
-    if (!current) throw new Error('Rulith is not attached: choose an Agent with the Deep Rulith entry.');
-    const holder = current;
-    if (!holder.bridge.closed) return holder.bridge;
-    if (!reconnecting) reconnecting = connectPatiently(holder).then(({ bridge }) => {
-      if (current !== holder) { bridge.close(); throw new Error('Rulith Agent detached'); }
-      holder.bridge = bridge;
-      report('attached', { agentName: holder.agentName, tools: [...TOOLS], reconnectedAt: new Date().toISOString() });
-      return bridge;
-    }).finally(() => { reconnecting = null; });
-    return reconnecting;
-  };
-  const request = async (holder, name, args) => {
-    if (current !== holder) throw new Error('Rulith Agent detached');
-    const bridge = await liveBridge();
-    try { return await bridge.call(name, args); }
-    catch (error) {
-      if (!TRANSIENT.test(String(error?.message ?? ''))) throw error;
-      if (name === 'Get') return (await liveBridge()).call(name, args);
-      throw new Error('The connection to Rulith was interrupted during this call; its outcome is unknown. Do not repeat it: Get shows its outcome in the operations strip.');
-    }
+    finally { signal?.removeEventListener('abort', abort); }
   };
   const attach = async (agent) => {
+    // Discover the authority's tool descriptions once. Conversation connections are opened on their first call.
     const { bridge, listed } = await connect(agent.token);
-    const holder = { token: agent.token, agentName: agent.agentName, bridge, disposers: [] };
-    const shadow = new ShadowReviewer({ enabled: shadowSettings.enabled !== false, log: shadowLog,
-      chat: (route, user, signal) => reviewWithModel(ctx.llm, route, user, signal) });
-    holder.channel = new BoardChannel({ shadow, invoke: (name, args) => request(holder, name, args),
-      focusedGoals: () => holder.bridge.focusedGoals,
+    const holder = { token: agent.token, agentName: agent.agentName, disposers: [] };
+    holder.boards = new ConversationBoards({ enabled: separateBoards,
+      connect: (key, signal) => connect(agent.token, key, signal),
+      report: (state, detail) => {
+        if (current === holder) report(state, { agentName: holder.agentName, tools: [...TOOLS], ...detail });
+      },
+      shadow: () => new ShadowReviewer({ enabled: shadowSettings.enabled !== false, log: shadowLog,
+        chat: (route, user, signal) => reviewWithModel(ctx.llm, route, user, signal) }),
       toolKinds: () => {
         // The selected local Worker's explicit manifest kinds; never infer read from an Action's name or args.
         const row = (readJson(path.join(home, 'registry.json'))?.instances ?? []).find((entry) => entry.id === agent.instanceId);
         const env = row ? readJson(path.join(row.directory, 'local.json'))?.worker?.env ?? {} : {};
         return readToolKinds(env.RULITH_TOOLS_FILE);
       } });
+    if (separateBoards) bridge.close();
+    else holder.boards.holder().bridge = bridge;
+    for (const agent of sessions.values()) holder.boards.observe(agent);
     holder.disposers = listed.tools.map((tool) => ctx.tools.register({
       name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
       output: { schema: {}, render: renderChannelResult },
@@ -172,7 +148,7 @@ export async function apply(ctx, config = {}) {
         if (current !== holder) throw new Error('Rulith Agent detached');
         // Routing only: no hand's conversation or reasoning reaches the shadow.
         const mainRoute = exec.agent?.session?.requestHeader?.()?.config ?? exec.agent?.options ?? {};
-        const outcome = await holder.channel.call(tool.name, args, { hand: handOf(exec.agent), signal: exec.signal,
+        const outcome = await holder.boards.holder(exec.agent).channel.call(tool.name, args, { hand: handOf(exec.agent), signal: exec.signal,
           route: { provider: shadowSettings.provider ?? mainRoute.provider ?? 'rulith-model',
             model: shadowSettings.model ?? mainRoute.model ?? process.env.RULITH_DSH_MODEL,
             maxTokens: shadowSettings.maxTokens ?? 8000 }, timeoutMs: shadowSettings.timeoutMs ?? 120_000 });
@@ -182,6 +158,14 @@ export async function apply(ctx, config = {}) {
     }));
     current = holder;
   };
+  ctx.on('agent/created', ({ agent }) => {
+    sessions.set(agent.session.id, agent);
+    current?.boards.observe(agent);
+  });
+  ctx.on('session/disposed', (session) => {
+    sessions.delete(session.id);
+    current?.boards.disposeSession(session);
+  });
   let busy = false;
   const tick = async () => {
     if (busy) return; busy = true;
@@ -190,10 +174,8 @@ export async function apply(ctx, config = {}) {
       if (!agent) { drop(); report('no_agent', { hint: 'Sign in with the Deep Rulith entry and choose an Agent' }); }
       else if (agent.token !== current?.token) {
         drop(); await attach(agent); report('attached', { agentName: agent.agentName, tools: [...TOOLS] });
-      } else if (current.bridge.closed) {
-        // Same credential: replace the connection, keep the tools.
-        try { await liveBridge(); } catch (error) { report('reconnecting', { error: String(error?.message ?? error).slice(0, 300) }); }
       }
+      // Each channel reconnects patiently on demand; an idle conversation cannot block another or the Agent selector.
     } catch (error) { drop(); report('failed', { error: String(error?.message ?? error).slice(0, 300) }); } finally { busy = false; }
   };
   const timer = setInterval(tick, 3000);
