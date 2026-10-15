@@ -23,6 +23,11 @@ const DEEPSEEK_API_HOST = 'api.deepseek.com';
  * @param route - `{ url, key }` of the model set in Rulith (the launcher's `rulith-model`, or the headless role's env).
  * @returns the key to pass to dsh as RULITH_DSH_WEB_SEARCH_KEY, or '' (web_search is then not offered).
  */
+// Without a search key web_search is not registered (overlay), so the addendum must not offer it either.
+export const searchOffered = (env = process.env) => Boolean(env.RULITH_DSH_WEB_SEARCH_KEY);
+export const withoutSearch = (text) => text.replace('the read-only tools web_search and web_fetch', 'the read-only tool web_fetch');
+export const forDeployment = (text, env = process.env) => (searchOffered(env) ? text : withoutSearch(text));
+
 export function webSearchKey(route) {
   if (!route?.key || !route.url) return '';
   try {

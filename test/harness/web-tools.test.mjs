@@ -272,3 +272,14 @@ test('installed dsh: web_fetch follows same-origin redirects only; a redirect to
     }
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
+
+test('without a search key the addendum offers only web_fetch, and nothing else changes', async () => {
+  const { forDeployment } = await import('../../harness/web-tools.mjs');
+  const { ADDENDUM } = await import('../../harness/rulith-gate.mjs');
+  const { ADDENDUM: WEB } = await import('../../harness/web/rulith-web-gate.mjs');
+  assert.equal(forDeployment(ADDENDUM, { RULITH_DSH_WEB_SEARCH_KEY: 'k' }), ADDENDUM);
+  const plain = forDeployment(ADDENDUM, {});
+  assert.match(plain, /^Your tools are Rulith's three and the read-only tool web_fetch\. Web results leave nothing on the Board/);
+  assert.equal(plain.slice(plain.indexOf(' Web results')), ADDENDUM.slice(ADDENDUM.indexOf(' Web results')));
+  assert.match(forDeployment(WEB, {}), /^Your tools are Rulith's three, delegation tools, and the read-only tool web_fetch\./);
+});

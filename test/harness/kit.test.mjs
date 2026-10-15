@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RulithMcp, PROTOCOL, TOOLS, apply as applyBridge } from '../../harness/rulith-mcp.mjs';
 import { restrictAgent, apply as applyGate, ADDENDUM } from '../../harness/rulith-gate.mjs';
+import { forDeployment } from '../../harness/web-tools.mjs';
 import { parseArgs, dshArgv, Budget, CAPS, startRole } from '../../harness/rulith-dsh-role.mjs';
 import { awaitOutcome } from '../../harness/web/rulith-runtime.mjs';
 import { sleep } from '../../engineering-work/lib.mjs';
@@ -122,7 +123,7 @@ test('gate restricts inherited globals through agent context before work',async(
   const dir=fs.mkdtempSync(path.join(scratch,'persona-')); const persona=path.join(dir,'persona.txt'); fs.writeFileSync(persona,'approved');
   const previous=process.env.RULITH_DSH_PERSONA; process.env.RULITH_DSH_PERSONA=persona;
   const handlers = new Map(); let section;
-  try { await applyGate({systemPrompt:{section:value=>{section=value;}},on:(type,cb)=>{handlers.set(type,cb);},provide:(key,value)=>{assert.equal(key,'rulithGate');assert.equal(value,true);}}); handlers.get('agent/created')({agent:{ctx:scoped}}); assert.equal(handlers.get('agent/pre-step'), undefined); assert.equal(typeof handlers.get('tools/execute'),'function','the web_fetch guard'); assert.equal(section.complete,true); assert.equal(section.interpolate,false); assert.equal(section.text,`approved\n\n${ADDENDUM}`); }
+  try { await applyGate({systemPrompt:{section:value=>{section=value;}},on:(type,cb)=>{handlers.set(type,cb);},provide:(key,value)=>{assert.equal(key,'rulithGate');assert.equal(value,true);}}); handlers.get('agent/created')({agent:{ctx:scoped}}); assert.equal(handlers.get('agent/pre-step'), undefined); assert.equal(typeof handlers.get('tools/execute'),'function','the web_fetch guard'); assert.equal(section.complete,true); assert.equal(section.interpolate,false); assert.equal(section.text,`approved\n\n${forDeployment(ADDENDUM)}`); }
   finally { if(previous===undefined)delete process.env.RULITH_DSH_PERSONA;else process.env.RULITH_DSH_PERSONA=previous; fs.rmSync(dir,{recursive:true,force:true}); }
 });
 

@@ -84,6 +84,10 @@ Children use the headless addendum below, whose first sentence is exactly:
 Your tools are Rulith's three and the read-only tools web_search and web_fetch.
 ```
 
+When no search key reached dsh (`RULITH_DSH_WEB_SEARCH_KEY` unset), web_search is not registered and every variant of the
+first sentence names only web_fetch: `the read-only tools web_search and web_fetch` becomes `the read-only tool web_fetch`
+(`forDeployment` in `harness/web-tools.mjs`); nothing else changes.
+
 The two delegation tools use dsh's installed schemas and descriptions. Spawn starts fresh; fork seeds completed
 parent turns only. Both inherit the parent route, restrict child tools, and cap depth at 1. The main agent can send_message or interrupt_agent; children cannot. Background runs use dsh's
 continuable driver (the default); run_in_background:false uses its one-shot driver. Stock list/model-selection,

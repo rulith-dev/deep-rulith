@@ -6,6 +6,7 @@ import { RulithMcp, TOOLS } from '../../harness/rulith-mcp.mjs';
 import { BoardChannel, blockedResult, isWrite, readToolKinds } from '../../harness/board-channel.mjs';
 import { ShadowReviewer, decodeBoardResult, deliveryNote } from '../../harness/web/shadow-reviewer.mjs';
 import { installGate, ADDENDUM, CHILD_ADDENDUM } from '../../harness/web/rulith-web-gate.mjs';
+import { forDeployment } from '../../harness/web-tools.mjs';
 import { handOf, DELEGATION_TOOLS } from '../../harness/subagents.mjs';
 import { WEB_TOOLS } from '../../harness/web-tools.mjs';
 import { cachedBoard } from '../../harness/web/rulith-runtime.mjs';
@@ -442,12 +443,12 @@ function gateFixture() {
 test('main delegates; spawn/fork/resumed children get exactly three tools and the web tools, and no further delegation', () => {
   const f = gateFixture(); const main = f.agent('main'); f.create(main);
   assert.deepEqual(main.filters[0].allow, [...TOOLS, ...DELEGATION_TOOLS, ...WEB_TOOLS]); assert.equal(handOf(main), 'main');
-  assert.equal(f.globalSections[0].text, 'approved persona\n\n' + ADDENDUM);
+  assert.equal(f.globalSections[0].text, 'approved persona\n\n' + forDeployment(ADDENDUM));
   for (const [source, header] of [['fresh', { parentSession: 'main', delegationDepth: 1 }],
     ['fork', { parentSession: 'main', delegationDepth: 1, isSeeded: true }], ['resume', { parentSession: 'main', delegationDepth: 1 }]]) {
     const child = f.agent(source, header, { subagentDepth: 0 }); f.create(child, source);
     assert.deepEqual(child.filters[0].allow, [...TOOLS, ...WEB_TOOLS]); assert.equal(handOf(child), source);
-    assert.equal(child.sections[0].text, 'approved persona\n\n' + CHILD_ADDENDUM); assert.equal(child.sections[0].complete, true);
+    assert.equal(child.sections[0].text, 'approved persona\n\n' + forDeployment(CHILD_ADDENDUM)); assert.equal(child.sections[0].complete, true);
   }
   assert.throws(() => f.create(f.agent('grandchild', { delegationDepth: 2 }, { subagentDepth: 0 })), /depth 1/);
 });
