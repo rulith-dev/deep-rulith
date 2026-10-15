@@ -24,9 +24,18 @@ export const name = 'rulith-runtime';
 export const inject = ['tools', 'webServer', 'llm'];
 
 /** The panel observes results already received on this Agent's channel; it never calls MCP. */
-export function cachedBoard(current, status) {
+export function cachedBoard(current, status, session) {
+  // Match conversationKey's session-id rules, including its bound before the dsh: prefix.
+  if (session !== undefined && (typeof session !== 'string' || !session || session.length > 196 || /[^\x21-\x7e]/.test(session)))
+    throw new Error('Invalid session id.');
   if (!current) return { available: false, tools: status };
-  if (current.boards?.enabled) return { available: true, agentName: current.agentName, liveConversations: current.boards.size };
+  if (current.boards?.enabled) {
+    if (session === undefined) return { available: true, agentName: current.agentName, liveConversations: current.boards.size };
+    // Consult only the observed mapping and existing holders: polling must never open a connection.
+    const key = current.boards.sessions.get(session);
+    const channel = current.boards.sessions.has(session) ? current.boards.holders.get(key)?.channel : undefined;
+    return { available: true, agentName: current.agentName, ...(channel?.latestBoard ?? { view: null }) };
+  }
   const channel = current.channel ?? current.boards?.holders.get(undefined)?.channel;
   return { available: true, agentName: current.agentName, ...channel?.latestBoard };
 }
@@ -393,7 +402,7 @@ export async function apply(ctx, config = {}) {
       await manager('/manager/instances/worker-setting', { instanceId: String(body.instanceId ?? ''), enabled: body.enabled === true });
       return summary(await manager('/manager/state'));
     },
-    'GET /rulith/api/board': () => cachedBoard(current, status),
+    'GET /rulith/api/board': (query) => cachedBoard(current, status, query.session),
     // The workbench address carries the manager key: handed out only on this guarded same-origin request.
     'POST /rulith/api/workbench': async () => ({ url: `http://127.0.0.1:${port}/?k=${key}` }),
   };
@@ -407,7 +416,8 @@ export async function apply(ctx, config = {}) {
       const route = routes[`${req.method} ${(req.url ?? '').split('?')[0]}`];
       if (!route) return send(res, 404, { ok: false, teaching: 'No such Deep Rulith route.' });
       try { send(res, 200, { ok: true, ...(await route(req.method === 'POST' ? await readBody(req)
-        : { workspace: new URL(req.url, 'http://127.0.0.1').searchParams.get('workspace') })) }); }
+        : { workspace: new URL(req.url, 'http://127.0.0.1').searchParams.get('workspace'),
+          session: new URL(req.url, 'http://127.0.0.1').searchParams.get('session') ?? undefined })) }); }
       catch (error) { send(res, 200, { ok: false, teaching: String(error?.message ?? error).slice(0, 400) }); }
     },
   }));

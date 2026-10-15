@@ -154,11 +154,18 @@ window.__ModuleLoader__.load({
 
     // The right column is this environment's execution, as the Rulith Runtime shows it beside a conversation:
     // goals, recent operations, the current frontier, and the local Worker's activity.
-    function RulithColumn({ sessionId, useSessions }) {
+    function RulithColumn({ mountedSession, useSessions }) {
+      // The sidebar's mounted store identifies the conversation this pane belongs to.
+      const sessionId = React.useSyncExternalStore(
+        (notify) => mountedSession.subscribe(notify), () => mountedSession.getSnapshot());
+      // Remount on a session change so its cached view and pending polls cannot leak into the next pane.
+      return sessionId === undefined ? null : h(RulithSessionColumn, { key: sessionId, sessionId, useSessions });
+    }
+    function RulithSessionColumn({ sessionId, useSessions }) {
       const workspace = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
       const [project, refreshProject] = usePoll("project?workspace=" + encodeURIComponent(workspace || ""), 6000);
       // Refresh the host's local snapshot; this route never sends a Board Get.
-      const [data, refresh] = usePoll("board", 6000);
+      const [data, refresh] = usePoll("board?session=" + encodeURIComponent(sessionId), 6000);
       const [worker, refreshWorker] = usePoll("worker", 6000);
       const [health, refreshHealth] = usePoll("health", 60000);
       const [trace, setTrace] = useState(true);
@@ -168,9 +175,6 @@ window.__ModuleLoader__.load({
       if (!data) return h("div", { style: { padding: 12 } }, "正在读取 Rulith…");
       if (!data.ok) return h("div", { style: { padding: 12, color: AMBER } }, data.teaching || "读不到 Rulith");
       if (!data.available) return h("div", { style: { padding: 12 } }, "还没有接入 Rulith：请在左下角登录并选择 Agent。");
-      if (data.liveConversations !== undefined) return h("div", { style: { padding: 12 } },
-        h("b", null, "Rulith · " + (data.agentName || "")),
-        h("p", null, "已连接会话：" + data.liveConversations), h("button", { style: button, onClick: reload }, "刷新"));
       if (!data.view) return h("div", { style: { padding: 12 } }, "还没有 Board 视图。");
       const board = data.view;
       const directory = board.goals && Array.isArray(board.goals.directory) ? board.goals.directory : [];
@@ -283,7 +287,8 @@ window.__ModuleLoader__.load({
       });
       const openBoard = () => { try { ctx.sidebarRight.openTab(TAB_KIND, {}); } catch (error) { console.warn("Deep Rulith: could not open the Rulith tab", error); } };
       ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({ name: "sidebar.footer.action", id: "rulith-account", inject: () => ({ openBoard }) }, RulithAccount));
-      ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({ name: "sidebar.right.pane.tab", key: TAB_ID, inject: () => ({}) }, RulithColumn));
+      ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({ name: "sidebar.right.pane.tab", key: TAB_ID,
+        inject: () => ({ mountedSession: ctx.sidebarRight.mounted }) }, RulithColumn));
       ctx.slots.inject("sidebar.right.pane.tab.title", () => ctx.slots.register({ name: "sidebar.right.pane.tab.title", key: TAB_ID, inject: () => ({}) }, () => h("span", null, "Rulith")));
       ctx.slots.inject("sidebar.brand.mark", () => ctx.slots.inject("sidebar.brand.name", function* () {
         yield ctx.slots.register({ name: "sidebar.brand.mark" }, ({ size }) => h("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center",

@@ -150,24 +150,25 @@ test('Source reader reuses the existing Worker channel and projects only binding
 });
 
 test('Board panel renders the cached view, operations, receipt time and empty state beside this session project', () => {
-  let plugin, column;
+  let plugin, column, columnProps;
   const cwd = work + '/rulith-java';
   let values, index;
-  const React = { createElement: (tag, props, ...children) => ({ tag, props, children }),
-    useState: (initial) => [index < values.length ? values[index++] : initial, () => {}], useEffect() {}, useCallback: (fn) => fn };
+  const React = { createElement: (tag, props, ...children) => typeof tag === 'function' ? tag(props) : ({ tag, props, children }),
+    useState: (initial) => [index < values.length ? values[index++] : initial, () => {}], useEffect() {}, useCallback: (fn) => fn,
+    useSyncExternalStore: (_subscribe, snapshot) => snapshot() };
   vm.runInNewContext(fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'), {
     window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } } }, setTimeout() {},
   });
-  plugin.apply({ effect() {}, inject() {}, sidebarRight: { mounted: { subscribe() {} } },
+  plugin.apply({ effect() {}, inject() {}, sidebarRight: { mounted: { subscribe() {}, getSnapshot: () => 'java-conversation' } },
     slots: { inject(_name, fn) { if (fn.constructor.name !== 'GeneratorFunction') fn(); },
-      register(opts, component) { if (opts.name === 'sidebar.right.pane.tab') column = component; } } });
+      register(opts, component) { if (opts.name === 'sidebar.right.pane.tab') { column = component; columnProps = opts.inject(); } } } });
   const seenAt = '2026-10-13T08:09:10.000Z';
   const boardData = { ok: true, available: true, view: {}, operations: [{ label: 'cached operation', state: 'done' }], seenAt };
   const render = (workspace, data = boardData) => {
     index = 0;
     values = [{ ok: true, workspace, project: { name: 'rulith-java' } },
       data, { ok: true, available: true, state: 'online' }, null];
-    return column({ sessionId: 'java-conversation', useSessions: (selector) => selector({ byId: { 'java-conversation': { cwd } } }) });
+    return column({ ...columnProps, useSessions: (selector) => selector({ byId: { 'java-conversation': { cwd } } }) });
   };
   const workerBlock = render(cwd).children.find((node) => node?.children?.[0]?.children?.[0]?.children?.[0] === '本机执行（Worker）');
   assert.equal(workerBlock.children[0].children[1].children[0], 'rulith-java');
@@ -179,5 +180,48 @@ test('Board panel renders the cached view, operations, receipt time and empty st
   assert.ok(received.includes('最近收到 Board：' + new Date(seenAt).toLocaleString()));
   assert.deepEqual(texts(render(cwd, { ok: true, available: true })), ['还没有 Board 视图。']);
   assert.deepEqual(texts(render(cwd, { ok: true, available: true, agentName: 'fixture', liveConversations: 2 })),
-    ['Rulith · fixture', '已连接会话：2', '刷新']);
+    ['还没有 Board 视图。']);
+});
+
+test('Board panel polls the mounted sidebar session immediately and changes its content key on a session switch', async () => {
+  let plugin, column, injected, mounted = 'first?&+#%';
+  const subscriptions = [], effects = [], requests = [], timers = [], cleared = [];
+  const React = {
+    createElement: (tag, props, ...children) => ({ tag, props, children }),
+    useState: (initial) => [initial, () => {}], useCallback: (fn) => fn,
+    useEffect: (fn) => effects.push(fn),
+    useSyncExternalStore: (subscribe, snapshot) => { subscribe(() => {}); return snapshot(); },
+  };
+  const store = { subscribe(fn) { subscriptions.push(fn); return () => {}; }, getSnapshot: () => mounted };
+  vm.runInNewContext(fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'), {
+    window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } } }, setTimeout() {},
+    setInterval(fn, ms) { timers.push({ fn, ms }); return timers.length; }, clearInterval: (id) => cleared.push(id),
+    fetch: async (url) => { requests.push(url); return { json: async () => ({ ok: true, available: true, view: null }) }; },
+  });
+  plugin.apply({ effect() {}, inject() {}, sidebarRight: { mounted: store },
+    slots: { inject(_name, fn) { if (fn.constructor.name !== 'GeneratorFunction') fn(); },
+      register(opts, component) {
+        if (opts.name === 'sidebar.right.pane.tab') { column = component; injected = opts.inject(); }
+      } } });
+  const render = () => column({ ...injected, sessionId: 'unrelated-page-session', useSessions: (selector) => selector({ byId: {} }) });
+  const first = render();
+  assert.equal(first.props.sessionId, mounted, 'the sidebar mounted session takes precedence over a generic page prop');
+  assert.equal(first.props.key, mounted);
+  first.tag(first.props);
+  const cleanups = effects.splice(0).map((fn) => fn());
+  assert.ok(requests.includes('/rulith/api/board?session=' + encodeURIComponent(mounted)));
+  assert.equal(subscriptions.length, 1, 'the panel subscribes to sidebar session changes');
+  for (const dispose of cleanups) dispose(); // React unmounts the old keyed content.
+  assert.equal(cleared.length, 4, 'all old session polling timers are cleaned up');
+  mounted = 'second-session';
+  subscriptions[0]();
+  const second = render();
+  assert.equal(second.props.sessionId, mounted);
+  assert.notEqual(second.props.key, first.props.key, 'changing the session resets cached state and pending poll ownership');
+  second.tag(second.props);
+  for (const fn of effects.splice(0)) fn();
+  assert.ok(requests.includes('/rulith/api/board?session=second-session'), 'session switches fetch immediately without waiting for a timer');
+  assert.ok(requests.every((url) => url !== '/rulith/api/board'), 'no unscoped Board request');
+  mounted = undefined;
+  assert.equal(render(), null, 'an unmounted sidebar does not poll a default Board');
 });

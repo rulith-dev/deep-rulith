@@ -187,10 +187,10 @@ test('a conversation waiting to reconnect cannot block another; disposal cancels
   assert.equal(f.boards.size, 1);
 });
 
-test('runtime routes registered tools by conversation, publishes only aggregate status, and disposes on dsh events', async (t) => {
+async function runtimeFixture(t, enabled = true) {
   // All I/O is mocked: no manager, credentials, socket, status file or Gateway is accessed.
   const previousFlag = process.env.RULITH_DSH_CONVERSATION_BOARDS;
-  process.env.RULITH_DSH_CONVERSATION_BOARDS = '1';
+  process.env.RULITH_DSH_CONVERSATION_BOARDS = enabled ? '1' : '0';
   t.after(() => {
     if (previousFlag === undefined) delete process.env.RULITH_DSH_CONVERSATION_BOARDS;
     else process.env.RULITH_DSH_CONVERSATION_BOARDS = previousFlag;
@@ -216,7 +216,9 @@ test('runtime routes registered tools by conversation, publishes only aggregate 
     if (body.method === 'notifications/initialized') return new Response(null, { status: 202, headers });
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {
       protocolVersion: '2025-11-25', tools: TOOLS.map((name) => ({ name, description: `fixture ${name}`, inputSchema: { type: 'object' } })),
-      content: [{ type: 'text', text: JSON.stringify({ accepted: true, view: {}, operations: [] }) }],
+      content: [{ type: 'text', text: JSON.stringify({ accepted: true,
+        view: { goals: { directory: [{ goal: 'fixture goal', label: init.headers['X-Rulith-Conversation'] === 'dsh:fork' ? 'fork' : 'parent' }] } },
+        operations: [{ label: 'fixture operation', state: 'done' }] }) }],
       _meta: { 'rulith/v4': { agentId: 'fixture' } },
     } }), { headers });
   });
@@ -228,11 +230,22 @@ test('runtime routes registered tools by conversation, publishes only aggregate 
   };
   t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
   await apply(ctx, { managerHome: 'fixture-manager', runtimeEntry: 'fixture-runtime', keyFile: 'fixture-key.txt',
-    conversationBoards: true, shadow: { enabled: false } });
+    conversationBoards: enabled, shadow: { enabled: false } });
+  const emit = (event, value) => { for (const fn of listeners.get(event) ?? []) fn(value); };
+  const panel = async (query = '') => {
+    let reply;
+    await server.handler({ method: 'GET', url: '/rulith/api/board' + query, headers: { host: 'localhost', 'x-deep-rulith': '1' } },
+      { writeHead(code) { assert.equal(code, 200); }, end(body) { reply = JSON.parse(body); } });
+    return reply;
+  };
+  return { requests, statuses, definitions, emit, panel };
+}
+
+test('runtime routes registered tools by conversation, publishes only aggregate status, and disposes on dsh events', async (t) => {
+  const { requests, statuses, definitions, emit, panel } = await runtimeFixture(t);
   assert.deepEqual(definitions.map((d) => [d.name, d.description]), TOOLS.map((name) => [name, `fixture ${name}`]));
   assert.deepEqual(requests.map((r) => r.method), ['initialize', 'notifications/initialized', 'tools/list']);
   assert.ok(requests.every((r) => r.headers['X-Rulith-Conversation'] === undefined), 'attachment only discovers tools');
-  const emit = (event, value) => { for (const fn of listeners.get(event) ?? []) fn(value); };
   emit('agent/created', { agent: main }); emit('agent/created', { agent: child }); emit('agent/created', { agent: fork });
   const get = definitions.find((d) => d.name === 'Get');
   for (const agent of [main, child, fork]) await get.execute({}, { agent });
@@ -240,12 +253,58 @@ test('runtime routes registered tools by conversation, publishes only aggregate 
     ['dsh:parent', 'dsh:parent', 'dsh:fork']);
   assert.equal(requests.filter((r) => r.method === 'initialize').length, 3, 'discovery plus two conversations');
   assert.equal(statuses.at(-1).liveConversations, 2);
-  let panel;
-  await server.handler({ method: 'GET', url: '/rulith/api/board', headers: { host: 'localhost', 'x-deep-rulith': '1' } },
-    { writeHead() {}, end(body) { panel = JSON.parse(body); } });
-  assert.deepEqual(panel, { ok: true, available: true, agentName: 'fixture', liveConversations: 2 });
+  assert.deepEqual(await panel(), { ok: true, available: true, agentName: 'fixture', liveConversations: 2 });
   emit('session/disposed', main.session); assert.equal(statuses.at(-1).liveConversations, 2);
   emit('session/disposed', child.session); assert.equal(statuses.at(-1).liveConversations, 1);
   emit('session/disposed', fork.session); assert.equal(statuses.at(-1).liveConversations, 0);
   assert.doesNotMatch(JSON.stringify(statuses), /dsh:|fixture-token|fixture-manager-key|fixture-mcp-session/);
+});
+
+test('Board endpoint reads only the requested session cache, including children and cold sessions', async (t) => {
+  const { requests, definitions, emit, panel } = await runtimeFixture(t);
+  for (const a of [main, child, fork, agent('unused')]) emit('agent/created', { agent: a });
+  const empty = { ok: true, available: true, agentName: 'fixture', view: null };
+  const discoveryCount = requests.length;
+  for (const id of ['parent', 'child', 'fork', 'unused', 'unknown', 'dsh:parent', 'a'.repeat(196), 'punctuation!~?#&=+%'])
+    assert.deepEqual(await panel('?session=' + encodeURIComponent(id)), empty);
+  assert.equal(requests.length, discoveryCount, 'empty panel reads do not call MCP');
+  assert.equal((await panel()).liveConversations, 0, 'panel reads do not create holders');
+  const get = definitions.find((d) => d.name === 'Get');
+  await get.execute({}, { agent: main }); await get.execute({}, { agent: fork });
+  const before = requests.length;
+  const parent = await panel('?session=parent');
+  assert.equal(parent.view.goals.directory[0].label, 'parent');
+  assert.deepEqual(parent.operations, [{ label: 'fixture operation', state: 'done' }]);
+  assert.ok(Number.isFinite(Date.parse(parent.seenAt)));
+  assert.deepEqual(Object.keys(parent).sort(), ['ok', 'available', 'agentName', 'view', 'operations', 'seenAt'].sort());
+  assert.deepEqual(await panel('?session=child'), parent);
+  const other = await panel('?session=fork');
+  assert.equal(other.view.goals.directory[0].label, 'fork');
+  assert.deepEqual(await panel('?session=unused'), empty);
+  assert.deepEqual(await panel('?session=unknown'), empty);
+  assert.deepEqual(await panel(), { ok: true, available: true, agentName: 'fixture', liveConversations: 2 });
+  for (const id of ['', 'space id', 'trailing\n', '\x00', '\x7f', '中文', 'a'.repeat(197)])
+    assert.deepEqual(await panel('?session=' + encodeURIComponent(id)), { ok: false, teaching: 'Invalid session id.' });
+  assert.equal(requests.length, before, 'panel reads and invalid queries never call MCP');
+  assert.equal((await panel()).liveConversations, 2, 'panel reads do not create holders');
+  assert.doesNotMatch(JSON.stringify([parent, other, empty]), /dsh:|fixture-token|fixture-manager-key|fixture-mcp-session/);
+  emit('session/disposed', main.session);
+  assert.deepEqual(await panel('?session=parent'), empty);
+  assert.deepEqual(await panel('?session=child'), parent, 'child still maps to the retained parent Board');
+});
+
+test('Board endpoint preserves the shared cached Board with the feature off, regardless of session', async (t) => {
+  const { requests, definitions, emit, panel } = await runtimeFixture(t, false);
+  const empty = { ok: true, available: true, agentName: 'fixture' };
+  assert.deepEqual(await panel(), empty);
+  assert.deepEqual(await panel('?session=unknown'), empty);
+  emit('agent/created', { agent: main }); emit('agent/created', { agent: child });
+  await definitions.find((d) => d.name === 'Get').execute({}, { agent: main });
+  const before = requests.length;
+  const shared = await panel();
+  assert.equal(shared.view.goals.directory[0].label, 'parent');
+  for (const id of ['parent', 'child', 'unknown']) assert.deepEqual(await panel('?session=' + id), shared);
+  assert.deepEqual(await panel('?session='), { ok: false, teaching: 'Invalid session id.' });
+  assert.equal(requests.length, before);
+  assert.ok(requests.every((r) => r.headers['X-Rulith-Conversation'] === undefined));
 });
