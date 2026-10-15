@@ -117,12 +117,12 @@ test('held outcomes follow the main operation identity and ignore historical sea
 });
 
 test('gate restricts inherited globals through agent context before work',async()=>{
-  const calls=[]; const scoped={tools:{restrict:filter=>{calls.push(filter);return ()=>{};}}};
-  restrictAgent({ctx:scoped}); assert.deepEqual(calls[0].allow,[...TOOLS]);
+  const calls=[]; const scoped={tools:{get:name=>['web_search','web_fetch','write','edit'].includes(name)?{}:undefined,restrict:filter=>{calls.push(filter);return ()=>{};}}};
+  restrictAgent({ctx:scoped}); assert.deepEqual(calls[0].allow,[...TOOLS,'web_search','web_fetch']);
   const dir=fs.mkdtempSync(path.join(scratch,'persona-')); const persona=path.join(dir,'persona.txt'); fs.writeFileSync(persona,'approved');
   const previous=process.env.RULITH_DSH_PERSONA; process.env.RULITH_DSH_PERSONA=persona;
   const handlers = new Map(); let section;
-  try { await applyGate({systemPrompt:{section:value=>{section=value;}},on:(type,cb)=>{handlers.set(type,cb);},provide:(key,value)=>{assert.equal(key,'rulithGate');assert.equal(value,true);}}); handlers.get('agent/created')({agent:{ctx:scoped}}); assert.equal(handlers.get('agent/pre-step'), undefined); assert.equal(section.complete,true); assert.equal(section.interpolate,false); assert.equal(section.text,`approved\n\n${ADDENDUM}`); }
+  try { await applyGate({systemPrompt:{section:value=>{section=value;}},on:(type,cb)=>{handlers.set(type,cb);},provide:(key,value)=>{assert.equal(key,'rulithGate');assert.equal(value,true);}}); handlers.get('agent/created')({agent:{ctx:scoped}}); assert.equal(handlers.get('agent/pre-step'), undefined); assert.equal(typeof handlers.get('tools/execute'),'function','the web_fetch guard'); assert.equal(section.complete,true); assert.equal(section.interpolate,false); assert.equal(section.text,`approved\n\n${ADDENDUM}`); }
   finally { if(previous===undefined)delete process.env.RULITH_DSH_PERSONA;else process.env.RULITH_DSH_PERSONA=previous; fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
@@ -184,6 +184,15 @@ test('fake dsh receives isolated cwd/home, disabled telemetry, task stdin and re
   assert.equal(trace[0].agentId,'agent'); await role.run('task --serve','conversation'); await role.run('followup','conversation');
   const invocation=JSON.parse(fs.readFileSync(path.join(f.cwd,'invocation.json'))); assert.equal(invocation.task,'followup');assert.equal(invocation.home,f.home);assert.equal(invocation.cwd,f.cwd);assert.equal(invocation.telemetry,'DISABLED');assert.equal(invocation.token,undefined);assert.ok(invocation.argv.includes('--session-id'));assert.equal(role.sessions.get('conversation').budget.promptTokens,6);
   await role.stop();
+});
+// D-1015c: the headless role passes DeepSeek's key for web_search only when the model is DeepSeek's own API.
+test('headless role passes a web search key only for a DeepSeek model',async t=>{
+  for(const [url,want] of [['https://api.deepseek.com/v1','test-search-key'],['http://127.0.0.1:9/v1',null]]){
+    const f=fakeFixture(t,"import fs from 'node:fs'; for await(const b of process.stdin){} fs.writeFileSync('search-key.json',JSON.stringify(process.env.RULITH_DSH_WEB_SEARCH_KEY ?? null)); console.log(JSON.stringify({type:'session',sessionId:'s'})); process.disconnect();");
+    const role=await startRole(f.options,{client:f.client,env:{...f.env,RULITH_MODEL_URL:url,RULITH_MODEL_KEY:'test-search-key',RULITH_DSH_WEB_SEARCH_KEY:'inherited'},emit(){}}); t.after(()=>role.stop());
+    await role.run('task','one'); await role.stop();
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.cwd,'search-key.json'),'utf8')),want,url);
+  }
 });
 test('fake dsh is killed at caps and the session cannot resume',async t=>{
   const f=fakeFixture(t,"for await(const b of process.stdin){} console.log(JSON.stringify({type:'status',phase:'step_start'})); console.log(JSON.stringify({type:'status',phase:'step_end',usage:{inputTokens:100}})); setInterval(()=>{},1000)");

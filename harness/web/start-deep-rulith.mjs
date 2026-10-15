@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { contextEnv, contextLines, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
+import { webSearchKey } from '../web-tools.mjs';
 
 const settingsFile = process.env.DEEP_RULITH_SETTINGS || process.argv[2];
 if (!settingsFile) throw new Error('usage: node start-deep-rulith.mjs <deep-rulith.json> [dsh web flags]');
@@ -48,12 +49,16 @@ const env = {
   ...(s.consoleUrl ? { RULITH_DSH_CONSOLE_URL: s.consoleUrl } : {}), ...(s.mcpUrl ? { RULITH_DSH_MCP_URL: s.mcpUrl } : {}), ...(s.agentName ? { RULITH_DSH_AGENT: s.agentName } : {}),
   RULITH_DSH_MODEL: model?.name ?? 'unset', RULITH_DSH_MODEL_BASE: base || 'http://127.0.0.1:9/unset',
   RULITH_MODEL_KEY: model?.key ?? '',
+  // D-1015c: dsh's web_search searches through DeepSeek with this key; set only when Rulith's model is DeepSeek's own API
+  // (web-tools.mjs). Without it the overlay leaves web_search unregistered and dsh starts as usual.
+  RULITH_DSH_WEB_SEARCH_KEY: webSearchKey(model),
   RULITH_DSH_SHADOW: JSON.stringify({ enabled: hostShadow,
     provider: shadow.provider ?? (shadowModel ? 'rulith-shadow' : undefined), model: shadow.model ?? shadowModel?.name,
     maxTokens: shadow.maxTokens ?? 8000, timeoutMs: shadow.timeoutMs ?? 120_000 }),
   RULITH_SHADOW_MODEL_KEY: shadowModel?.key ?? '',
   ...contextEnv(lines),
 };
+if (!env.RULITH_DSH_WEB_SEARCH_KEY) delete env.RULITH_DSH_WEB_SEARCH_KEY;
 if (!model) console.error('Deep Rulith: no model is set in Rulith yet; set it under 更多设置 (Rulith workbench) and restart.');
 // The local Worker is the platform reviewer's model route (D-1013f post-call advice). The managed host gives the Worker
 // only its instance's worker.env, so on every start the route of the model dsh currently uses for the agent

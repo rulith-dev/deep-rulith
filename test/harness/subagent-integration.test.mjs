@@ -22,14 +22,23 @@ test('installed dsh spawn/fork tools preserve route, depth and filter on both sc
   for (const entry of disabled) {
     assert.equal(entry.disabled, true); assert.equal(entry.config, undefined);
   }
-  for (const file of ['harness/web/rulith-web.cordis.yml']) {
-    const entries = YAML.parse(fs.readFileSync(new URL('../../' + file, import.meta.url), 'utf8'), { logLevel: 'silent' });
+  // The web overlay in dsh's entry-list dialect (JSON schema plus `!!js`), its expressions evaluated by the installed loader.
+  const jsYaml = createRequire(path.join(root, 'dsh-app-boot', 'lib', 'index.js'))('js-yaml');
+  const js = new jsYaml.Type('tag:yaml.org,2002:js', { kind: 'scalar', resolve: (data) => typeof data === 'string', construct: (data) => ({ __jsExpr: data }) });
+  const { interpolate } = await import(pathToFileURL(path.join(root, 'cordis-plugin-loader', 'lib', 'index.js')));
+  const saved = process.env.RULITH_DSH_WEB_SEARCH_KEY;
+  // D-1015c: children also get the web tools; web_search only when a search key reached dsh.
+  for (const [searchKey, web] of [['test-search-key', ['web_search', 'web_fetch']], [undefined, ['web_fetch']]]) try {
+    if (searchKey === undefined) delete process.env.RULITH_DSH_WEB_SEARCH_KEY; else process.env.RULITH_DSH_WEB_SEARCH_KEY = searchKey;
+    const entries = jsYaml.load(fs.readFileSync(new URL('../../harness/web/rulith-web.cordis.yml', import.meta.url), 'utf8'), { schema: jsYaml.JSON_SCHEMA.extend(js) })
+      .map((entry) => entry.config === undefined ? entry : { ...entry, config: interpolate({}, entry.config) });
     const row = (id) => entries.find((entry) => entry.id === id);
     assert.deepEqual(row('subagent').config, { maxDepth: 1, maxActiveSubagents: 4 });
     for (const id of ['subagent', 'subagent-spawn-in-process', 'subagent-fork-in-process', 'tool-subagent', 'tool-subagent-fork', 'tool-subagent-control'])
       assert.equal(row(id).disabled, false, 'an existing disabled profile must be re-enabled');
-    for (const id of ['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'tool-web', 'tool-plugin-manager', 'tool-jobs', 'tool-subagent-list-agents'])
+    for (const id of ['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'fs-observation-policy', 'tool-plugin-manager', 'tool-jobs', 'tool-subagent-list-agents'])
       assert.equal(row(id).disabled, true);
+    assert.equal(row('tool-web').disabled, false, 'D-1015c: the read-only web tools are on');
     const providers = new Map(), definitions = [], requests = [];
     const ctx = { get() {}, on() {}, sessionProjections: { register() {} },
       tools: { register(def) { definitions.push(def); return () => {}; } },
@@ -56,8 +65,10 @@ test('installed dsh spawn/fork tools preserve route, depth and filter on both sc
       assert.equal((await def.execute({ description: 'task', prompt: 'work', run_in_background: false }, exec)).kind, 'foreground');
     }
     for (const [, request] of requests) {
-      assert.equal(request.maxDepth, 1); assert.deepEqual(request.toolFilter, { allow: ['Get', 'Set', 'Execute'] });
+      assert.equal(request.maxDepth, 1); assert.deepEqual(request.toolFilter, { allow: ['Get', 'Set', 'Execute', ...web] });
       assert.equal(request.agentOptions, undefined, 'dsh provider inherits the main route');
     }
+  } finally {
+    if (saved === undefined) delete process.env.RULITH_DSH_WEB_SEARCH_KEY; else process.env.RULITH_DSH_WEB_SEARCH_KEY = saved;
   }
 });

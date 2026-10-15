@@ -1,13 +1,15 @@
 // Admission is on dsh's Agent creation boundary, before either driver can run a child.
 // It also covers cold resume; the scope effect releases a reservation on rollback or disposal.
 import { TOOLS } from './rulith-mcp.mjs';
+import { offeredWebTools } from './web-tools.mjs';
 
 export const DELEGATION_TOOLS = Object.freeze(['subagent', 'subagent_fork', 'send_message', 'interrupt_agent']);
 export const MAX_CHILDREN = 4;
 export const depthOf = (agent) => Math.max(agent?.session?.header?.delegationDepth ?? 0, agent?.options?.subagentDepth ?? 0,
   agent?.session?.header?.parentSession ? 1 : 0);
 export const handOf = (agent) => depthOf(agent) ? agent.session.id : 'main';
-export const toolsOf = (agent) => depthOf(agent) ? [...TOOLS] : [...TOOLS, ...DELEGATION_TOOLS];
+/** Every hand has Rulith's three and the registered read-only web tools (D-1015c); only the main agent delegates. */
+export const toolsOf = (agent, web = []) => depthOf(agent) ? [...TOOLS, ...web] : [...TOOLS, ...DELEGATION_TOOLS, ...web];
 
 export function installSubagentAdmission(ctx, configure) {
   const children = new Set();
@@ -19,7 +21,7 @@ export function installSubagentAdmission(ctx, configure) {
       children.add(agent);
       agent.ctx.effect(() => () => children.delete(agent));
     }
-    agent.ctx.tools.restrict({ allow: toolsOf(agent) });
+    agent.ctx.tools.restrict({ allow: toolsOf(agent, offeredWebTools(agent.ctx.tools)) });
     configure?.(agent, depth);
   });
   return children;

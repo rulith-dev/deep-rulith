@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { RulithMcp, surfaceAccepted } from './rulith-mcp.mjs';
+import { webSearchKey } from './web-tools.mjs';
 import { inside, killTree, readJson, save } from '../engineering-work/lib.mjs';
 
 export const CAPS = Object.freeze({ steps: 150, wallMs: 90 * 60 * 1000, promptTokens: 25000000 });
@@ -87,6 +88,9 @@ export async function startRole(options, { client, emit = defaultEmit, caps = CA
     const childEnv = { ...env, DSH_HOME: home, DSH_TELEMETRY_MODE: 'DISABLED', DSH_TELEMETRY_DISABLED: '1', DSH_TOOLS_MODE: 'native', RULITH_DSH_PROXY: 'ipc', RULITH_DSH_PERSONA: options.persona,
       RULITH_DSH_MODEL: requiredModel(env.RULITH_MODEL), RULITH_DSH_MODEL_BASE: modelBase(requiredModel(env.RULITH_MODEL_URL)) };
     delete childEnv.RULITH_TOKEN; delete childEnv.RULITH_SERVE_KEY;
+    // D-1015c: web_search only with DeepSeek's own key (web-tools.mjs); otherwise the overlay leaves it unregistered.
+    const searchKey = webSearchKey({ url: env.RULITH_MODEL_URL, key: env.RULITH_MODEL_KEY });
+    if (searchKey) childEnv.RULITH_DSH_WEB_SEARCH_KEY = searchKey; else delete childEnv.RULITH_DSH_WEB_SEARCH_KEY;
     const child = spawn(process.execPath, dshArgv(options,task,slot.id), { cwd, env: childEnv, detached: true, windowsHide: true, stdio: ['pipe','pipe','pipe','ipc'] });
     active = { child, taskId };
     const stopChild = async reason => { if (slot.capped) return; slot.capped = reason; persist(); report('cap',{ reason, session: sessionKey, task: taskId }); try { await terminate(child.pid); } catch { failure = 'process tree termination failed'; } };

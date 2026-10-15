@@ -1,11 +1,11 @@
 # Deep Rulith
 
 Deep Rulith is built on [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)
-and gives it [Rulith](https://rulith.ai) as its only tools. It uses dsh's web UI and agent, with a
+and gives it [Rulith](https://rulith.ai) as its tools, beside dsh's read-only web search and fetch. It uses dsh's web UI and agent, with a
 profile overlay that adds a Rulith account entry (bottom left) and keeps the Rulith Runtime's three
 columns (sessions, conversation, and on the right this environment's execution: goals, operations,
 frontier and the local Worker), replaces
-every local dsh tool with Rulith's five MCP tools (`rulith/v4`), and turns off dsh features that would act outside
+every other local dsh tool with Rulith's three MCP tools (`rulith/v4`), and turns off dsh features that would act outside
 Rulith or cut its results (subagents, goals, workflows, plan mode, result pruning). Long conversations
 are condensed by dsh's automatic compaction; the summary is a recap, not evidence. Reading, editing,
 building and testing happen only
@@ -36,6 +36,9 @@ installed by `npm install` in this repository.
   format and a 1M-token context window; change `rulith-web.cordis.yml` for other models.
 - Tool calls go to the Rulith Gateway you sign in to. Worker receipts recorded on your Agent's
   Board include bounded file text (up to 1 KiB head and tail), command output and digests.
+- The model's native web tools (D-1015c, read-only and outside Rulith): `web_search` sends its queries to DeepSeek's
+  search API with the model key, offered only when Rulith's model is DeepSeek's own API; `web_fetch` sends GET requests
+  to public http(s) URLs (local, private and link-local addresses are refused). Their results leave nothing on the Board.
 - dsh telemetry, feedback, session upload and the DeepSeek account integration are disabled by the overlay.
 
 ## Setup (manual, alpha)

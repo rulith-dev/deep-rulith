@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { RulithMcp, TOOLS, NAMESPACE, surfaceAccepted } from '../../harness/rulith-mcp.mjs';
+import { createHash } from 'node:crypto';
 import { ADDENDUM } from '../../harness/rulith-gate.mjs';
+import { ADDENDUM as WEB_ADDENDUM, CHILD_ADDENDUM } from '../../harness/web/rulith-web-gate.mjs';
 
 const read = (file) => fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
 
@@ -29,7 +31,6 @@ test('a Gateway that reports its identity only under rulith/v3 is refused at ini
 
 test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_id', () => {
   const persona = read('harness/runtime-persona.txt');
-  assert.match(ADDENDUM, /^Your only tools are Rulith's three\./);
   assert.match(persona, /Inside Set, assert_fact/);
   // D-1012h: the Board View paragraph left the persona; the Get description teaches reading a current view.
   assert.doesNotMatch(persona, /Every Board tool result carries the Board View|Every answer from the authority also shows operations/);
@@ -40,6 +41,22 @@ test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_i
   // D-1012h: certification is taught once (persona and the Set description); the addendum no longer repeats it.
   assert.doesNotMatch(ADDENDUM, /completes the goal by itself/);
   assert.match(persona, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason\./);
+});
+
+// D-1015c (owner 2026-10-15): the read-only web tools stay native. Only the first sentence changed and one sentence
+// follows it; the rest of the addendum is byte-identical to the one before (its SHA-256 is pinned below).
+test('the addendum names the native web tools; everything after its first two sentences is unchanged', () => {
+  const web = 'Web results leave nothing on the Board: when one is evidence for a result, record it on the Board with its URL as the source.';
+  const headless = `Your tools are Rulith's three and the read-only tools web_search and web_fetch. ${web}`;
+  const main = `Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch. ${web}`;
+  assert.ok(ADDENDUM.startsWith(`${headless} Writing, running commands and measuring are Actions`));
+  assert.equal(WEB_ADDENDUM, main + ADDENDUM.slice(headless.length));
+  assert.equal(CHILD_ADDENDUM, ADDENDUM, 'web children use the headless addendum');
+  assert.equal(createHash('sha256').update(ADDENDUM.slice(headless.length)).digest('hex'),
+    'f0b9733dbd59b4916c73681fe6d3df8ea1be845e4f8866192280f6630b23d7b5');
+  const inventory = read('harness/model-visible.md');
+  assert.ok(inventory.includes(ADDENDUM));
+  assert.ok(inventory.includes("Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch."));
 });
 
 test('goal guidance declares an outcome without a generic test-to-completion rule', () => {

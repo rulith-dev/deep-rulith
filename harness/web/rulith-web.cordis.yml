@@ -1,7 +1,7 @@
 # Deep Rulith: the Rulith edition of DeepSeek Harness (dsh 0.2.1-alpha.1 web profile, base + web-app). dsh's own agent and UI stay;
-# its local tools, dsh-authored model text (except the repeat-tool reminder), DeepSeek account, feedback, telemetry and session uploads are off. The model is the one
+# its local tools (except the read-only web tools, D-1015c), dsh-authored model text (except the repeat-tool reminder and the web tools' own text), DeepSeek account, feedback, telemetry and session uploads are off. The model is the one
 # set in Rulith (any OpenAI-compatible endpoint, through the generic adapter: no DeepSeek-specific headers or identity).
-# Rulith's three tools (rulith/v4), the approved persona and the Deep Rulith account entry and panel are added.
+# Rulith's three tools (rulith/v4), the approved persona and the Deep Rulith account entry and panel are added; dsh's web_search and web_fetch stay native.
 # Paths come from the launcher's environment (start-deep-rulith.mjs); nothing secret is written here.
 - id: tool-plugin-manager
   disabled: true
@@ -62,8 +62,9 @@
     maxDepth: 1
     enableRunInBackground: true
     backgroundMode: continuable
+    # Children: Rulith's three and the registered web tools (web_search only with a search key, as tool-web below).
     toolFilter:
-      allow: [Get, Set, Execute]
+      allow: !!js "process.env.RULITH_DSH_WEB_SEARCH_KEY ? ['Get', 'Set', 'Execute', 'web_search', 'web_fetch'] : ['Get', 'Set', 'Execute', 'web_fetch']"
 - id: tool-subagent-fork
   disabled: false
   config:
@@ -72,8 +73,9 @@
     maxDepth: 1
     enableRunInBackground: true
     backgroundMode: continuable
+    # Children: Rulith's three and the registered web tools (web_search only with a search key, as tool-web below).
     toolFilter:
-      allow: [Get, Set, Execute]
+      allow: !!js "process.env.RULITH_DSH_WEB_SEARCH_KEY ? ['Get', 'Set', 'Execute', 'web_search', 'web_fetch'] : ['Get', 'Set', 'Execute', 'web_fetch']"
 - id: ptc-runtime
   disabled: true
 - id: workflow-ptc
@@ -94,14 +96,22 @@
 # dsh's repeat-tool reminder stays on (thresholds 3, 5, 8; arguments compared key-sorted, as received): when the
 # arguments that reach Rulith are the same call after call, the model is told so, which is how it learns that its own
 # corrections are not arriving (2026-10-08: a parser added naf to every rule head ten times in a row).
-- id: web
-  disabled: true
+# D-1015c（所有者 2026-10-15）：只读、无副作用的网络工具不经 Rulith，原生提供：dsh 的 web_search 与 web_fetch（tool-web，
+# 以及它需要的 web、web-search-deepseek、web-fetch-http，后三者 base 本就开着）。dsh 网页版把 tool-web 关在主机层（交给预设），
+# 这里重新打开。其余本地工具（read、write、edit、glob、grep、shell、作业）仍关；工具白名单见 rulith-web-gate.mjs。
+# web_search 走 DeepSeek 的搜索接口，密钥只经环境变量 RULITH_DSH_WEB_SEARCH_KEY 传入：启动器只在 Rulith 的模型是 DeepSeek
+# API 时设置它（web-tools.mjs webSearchKey），没有时不注册 web_search，启动照常。web_fetch 的地址检查见 web-tools.mjs。
 - id: web-search-deepseek
-  disabled: true
-- id: web-fetch-http
-  disabled: true
+  config:
+    apiKeyEnv: RULITH_DSH_WEB_SEARCH_KEY
+    # Pinned to DeepSeek (dsh's default), so the key never follows a DEEPSEEK_SEARCH_BASE_URL from a .env file.
+    baseURL: https://api.deepseek.com/anthropic/v1
 - id: tool-web
-  disabled: true
+  disabled: false
+  config:
+    search: !!js '!!process.env.RULITH_DSH_WEB_SEARCH_KEY'
+    fetch: true
+    searchTimeoutMs: 60000
 - id: mcp-resources
   disabled: true
 - id: session-log-deepseek

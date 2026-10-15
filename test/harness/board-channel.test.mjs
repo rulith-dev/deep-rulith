@@ -7,6 +7,7 @@ import { BoardChannel, blockedResult, isWrite, readToolKinds } from '../../harne
 import { ShadowReviewer, decodeBoardResult, deliveryNote } from '../../harness/web/shadow-reviewer.mjs';
 import { installGate, ADDENDUM, CHILD_ADDENDUM } from '../../harness/web/rulith-web-gate.mjs';
 import { handOf, DELEGATION_TOOLS } from '../../harness/subagents.mjs';
+import { WEB_TOOLS } from '../../harness/web-tools.mjs';
 import { cachedBoard } from '../../harness/web/rulith-runtime.mjs';
 
 const result = (answer, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(answer) }], ...(isError ? { isError } : {}) });
@@ -430,20 +431,22 @@ function gateFixture() {
   const agent = (id, header = {}, options = {}) => {
     const filters = [], sections = [], cleanup = [];
     return { id, options, session: { id, header }, filters, sections, cleanup,
-      ctx: { tools: { restrict: (filter) => filters.push(filter) }, systemPrompt: { section: (section) => sections.push(section) },
+      // dsh's registry as the gate reads it: the web tools are registered (D-1015c) beside dsh's other tools.
+      ctx: { tools: { get: (name) => ['web_search', 'web_fetch', 'read', 'write', 'bash'].includes(name) ? {} : undefined,
+        restrict: (filter) => filters.push(filter) }, systemPrompt: { section: (section) => sections.push(section) },
         effect: (fn) => cleanup.push(fn()) }, dispose() { for (const fn of cleanup) fn(); } };
   };
   return { children, agent, create: (agent, source = 'fresh') => handlers.get('agent/created')({ agent, source }), globalSections };
 }
 
-test('main delegates; spawn/fork/resumed children get exactly three tools and no further delegation', () => {
+test('main delegates; spawn/fork/resumed children get exactly three tools and the web tools, and no further delegation', () => {
   const f = gateFixture(); const main = f.agent('main'); f.create(main);
-  assert.deepEqual(main.filters[0].allow, [...TOOLS, ...DELEGATION_TOOLS]); assert.equal(handOf(main), 'main');
+  assert.deepEqual(main.filters[0].allow, [...TOOLS, ...DELEGATION_TOOLS, ...WEB_TOOLS]); assert.equal(handOf(main), 'main');
   assert.equal(f.globalSections[0].text, 'approved persona\n\n' + ADDENDUM);
   for (const [source, header] of [['fresh', { parentSession: 'main', delegationDepth: 1 }],
     ['fork', { parentSession: 'main', delegationDepth: 1, isSeeded: true }], ['resume', { parentSession: 'main', delegationDepth: 1 }]]) {
     const child = f.agent(source, header, { subagentDepth: 0 }); f.create(child, source);
-    assert.deepEqual(child.filters[0].allow, [...TOOLS]); assert.equal(handOf(child), source);
+    assert.deepEqual(child.filters[0].allow, [...TOOLS, ...WEB_TOOLS]); assert.equal(handOf(child), source);
     assert.equal(child.sections[0].text, 'approved persona\n\n' + CHILD_ADDENDUM); assert.equal(child.sections[0].complete, true);
   }
   assert.throws(() => f.create(f.agent('grandchild', { delegationDepth: 2 }, { subagentDepth: 0 })), /depth 1/);

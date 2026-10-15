@@ -88,7 +88,7 @@ test('installed dsh: the overlay evaluates the relief ratio and the compaction c
 });
 
 // The launcher itself, with a stand-in for dsh that records the environment it was started with.
-function launch(settings) {
+function launch(settings, modelDefaults) {
   const dir = temp();
   const out = path.join(dir, 'dsh-env.json');
   const fakeDsh = path.join(dir, 'fake-dsh.mjs');
@@ -96,6 +96,7 @@ function launch(settings) {
   const s = { dshBin: fakeDsh, dshHome: path.join(dir, 'dsh-home'), cwd: dir, managerHome: path.join(dir, 'manager-home'),
     keyFile: path.join(dir, 'key.txt'), runtimeEntry: path.join(dir, 'runtime.mjs'), persona: path.join(dir, 'persona.txt'), ...settings };
   fs.mkdirSync(s.managerHome, { recursive: true });
+  if (modelDefaults) fs.writeFileSync(path.join(s.managerHome, 'model-defaults.json'), JSON.stringify({ defaults: modelDefaults }));
   const file = path.join(dir, 'deep-rulith.json');
   fs.writeFileSync(file, JSON.stringify(s));
   const run = spawnSync(process.execPath, [path.join(web, 'start-deep-rulith.mjs'), file], { env: { ...process.env, FAKE_DSH_OUT: out }, encoding: 'utf8', timeout: 30_000 });
@@ -228,4 +229,29 @@ test('reviewerRoutes send instances of matching Agents to another reviewer route
   const read = (id) => JSON.parse(fs.readFileSync(path.join(home, 'instances', id, 'local.json'), 'utf8')).worker.env;
   assert.equal(read('inst-a').RULITH_REVIEWER_MODEL, 'ds');
   assert.equal(read('inst-b').RULITH_REVIEWER_MODEL, 'qwen');
+});
+
+// D-1015c: dsh's web_search searches through DeepSeek. The launcher passes the model's key for it only when Rulith's model
+// is DeepSeek's own API; otherwise web_search is not registered (the overlay reads the variable) and dsh starts as usual.
+test('the launcher passes a web search key only for a DeepSeek model, never prints it, and starts without one', () => {
+  const key = 'test-deepseek-key-0123456789';
+  const deepseek = launch({}, [{ name: 'deepseek-chat', url: 'https://api.deepseek.com/v1', key }]);
+  assert.equal(deepseek.run.status, 0, deepseek.run.stderr);
+  assert.equal(deepseek.started.env.RULITH_DSH_WEB_SEARCH_KEY, key);
+  assert.ok(!deepseek.run.stdout.includes(key) && !deepseek.run.stderr.includes(key), 'the key is not printed');
+  for (const [label, defaults] of [['local engine', [{ name: 'qwen', url: 'http://127.0.0.1:8080/v1', key }]],
+    ['another provider', [{ name: 'gpt', url: 'https://api.openai.com/v1', key }]], ['no model', undefined]]) {
+    const started = launch({}, defaults);
+    assert.equal(started.run.status, 0, `${label}: ${started.run.stderr}`);
+    assert.equal(Object.hasOwn(started.started.env, 'RULITH_DSH_WEB_SEARCH_KEY'), false, `${label}: web_search is not offered`);
+  }
+  // The overlays name only the variable; no key is written into either file.
+  for (const file of ['rulith-web.cordis.yml', '../rulith.cordis.yml']) {
+    const overlay = fs.readFileSync(path.join(web, file), 'utf8');
+    assert.match(overlay, /- id: web-search-deepseek\n {2}config:\n {4}apiKeyEnv: RULITH_DSH_WEB_SEARCH_KEY\n(?: {4}#.*\n)? {4}baseURL: https:\/\/api\.deepseek\.com\/anthropic\/v1\n/);
+    assert.match(overlay, /\n {4}search: !!js '!!process\.env\.RULITH_DSH_WEB_SEARCH_KEY'\n {4}fetch: true\n/);
+    assert.doesNotMatch(overlay, /- id: (web|web-fetch-http|web-search-deepseek|tool-web)\n {2}disabled: true/);
+    for (const id of ['tool-fs', 'tool-fs-search', 'fs-observation-policy', 'tool-bash', 'tool-pwsh', 'tool-jobs'])
+      assert.match(overlay, new RegExp(`- id: ${id}\n {2}disabled: true\n`), id);
+  }
 });
