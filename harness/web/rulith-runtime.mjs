@@ -112,13 +112,29 @@ export async function apply(ctx, config = {}) {
       return { bridge, listed };
     } catch (error) { bridge.close(); throw error; }
   };
+  const TRANSIENT = /^(MCP transport failed|MCP request refused|MCP response unreadable|MCP connection closed|connection_replaced)$/;
+  // While the Gateway restarts (the daily stop-writers backup, a release swap) connections are refused for a minute or two.
+  // Reconnect with backoff for up to RULITH_DSH_RECONNECT_PATIENCE_MS (default 3 minutes) before a call fails to the model;
+  // otherwise the model retries a dozen times within that minute and gives up (an explorer run on 2026-10-15 did exactly that).
+  const patienceMs = Number(process.env.RULITH_DSH_RECONNECT_PATIENCE_MS ?? 180000);
+  const connectPatiently = async (holder) => {
+    const until = Date.now() + patienceMs;
+    for (let delay = 2000; ; delay = Math.min(delay * 2, 30000)) {
+      try { return await connect(holder.token); }
+      catch (error) {
+        if (!TRANSIENT.test(String(error?.message ?? '')) || current !== holder || Date.now() + delay > until) throw error;
+        report('reconnecting', { agentName: holder.agentName, reason: String(error.message), retryInMs: delay });
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  };
   // One replacement attempt for the one main session; queued requests keep their order across reconnect.
   let reconnecting = null;
   const liveBridge = async () => {
     if (!current) throw new Error('Rulith is not attached: choose an Agent with the Deep Rulith entry.');
     const holder = current;
     if (!holder.bridge.closed) return holder.bridge;
-    if (!reconnecting) reconnecting = connect(holder.token).then(({ bridge }) => {
+    if (!reconnecting) reconnecting = connectPatiently(holder).then(({ bridge }) => {
       if (current !== holder) { bridge.close(); throw new Error('Rulith Agent detached'); }
       holder.bridge = bridge;
       report('attached', { agentName: holder.agentName, tools: [...TOOLS], reconnectedAt: new Date().toISOString() });
@@ -126,7 +142,6 @@ export async function apply(ctx, config = {}) {
     }).finally(() => { reconnecting = null; });
     return reconnecting;
   };
-  const TRANSIENT = /^(MCP transport failed|MCP request refused|MCP response unreadable|MCP connection closed|connection_replaced)$/;
   const request = async (holder, name, args) => {
     if (current !== holder) throw new Error('Rulith Agent detached');
     const bridge = await liveBridge();
