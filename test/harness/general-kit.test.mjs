@@ -28,6 +28,8 @@ function fixture(t) {
 function check(f, name = 'request') {
   const test = 'check.mjs', code = 'process.exit(0)';
   fs.writeFileSync(path.join(f.root, test), code);
+  // A check command is classified like eng.run: Node's absolute path lies outside the project, so the owner allows it.
+  json(path.join(f.home, 'settings.json'), { allowedPaths: [path.dirname(process.execPath)] });
   const spec = { command: [process.execPath, test], cwd: '.', files: { [test]: sha(code) } };
   const file = path.join(f.root, '.rulith', 'acceptance', `${name}.json`);
   json(file, spec);
@@ -55,7 +57,10 @@ test('shipped acceptance discovery and named checks bind the digest and invalida
   const discovery = await f.call('acceptance');
   assert.equal(discovery.rows.length, 1);
   const proposed = discovery.rows[0];
-  assert.equal(proposed.check, 'request'); assert.equal(proposed.files, 1);
+  assert.equal(proposed.check, 'request');
+  // The row shows what the digest freezes: the command line, cwd, shell flag and every pinned file digest.
+  assert.deepEqual(JSON.parse(proposed.files), [{ path: 'check.mjs', sha256: spec.files['check.mjs'] }]);
+  assert.equal(proposed.cwd, '.'); assert.equal(proposed.shell, false); assert.match(proposed.command, /check\.mjs$/);
   assert.match(proposed.spec_digest, /^[a-f0-9]{64}$/);
   // Formatting/order changes leave the signed digest intact.
   fs.writeFileSync(file, JSON.stringify({ files: spec.files, cwd: '.', command: spec.command }, null, 2));
