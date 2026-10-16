@@ -11,7 +11,7 @@ import { parseArgs, dshArgv, Budget, CAPS, startRole } from '../../harness/rulit
 import { awaitOutcome } from '../../harness/web/rulith-runtime.mjs';
 import { sleep } from '../../harness/host-utils.mjs';
 import { workerInventory } from '../../harness/worker-inventory.mjs';
-import { generalKit } from '../../harness/runtime-kit.mjs';
+import { generalKit, kitReady, KIT_SKIP } from '../../harness/runtime-kit.mjs';
 
 const scratch=fileURLToPath(new URL('../../.scratch/',import.meta.url)); fs.mkdirSync(scratch,{recursive:true});
 const response=(result,id,status=200,extra={})=>new Response(status===202?null:JSON.stringify({jsonrpc:'2.0',id,result}),{status,headers:{'content-type':'application/json','mcp-session-id':'session',...extra}});
@@ -230,7 +230,7 @@ test('overlay disabled ids exist in pinned dsh base sources; runner depends on g
   for(const id of ids) assert.match(base,new RegExp(`^    - id: ${id}$`,'m'),id);
   assert.equal(new Set(ids).size,ids.length);assert.match(overlay,/inject: \[headlessStartup, rulithGate\]/);assert.match(overlay,/compression: none/);assert.match(overlay,/maxParallelToolCalls: 1/);
 });
-test('model-visible inventory contains every manifest id, primary predicate and fixed verdict',()=>{
+test('model-visible inventory contains every manifest id, primary predicate and fixed verdict',{skip:!kitReady()&&KIT_SKIP},()=>{
   const inventory=fs.readFileSync(new URL('../../harness/model-visible.md',import.meta.url),'utf8');
   const manifest=JSON.parse(fs.readFileSync(path.join(generalKit(), 'worker-tools.json')));
   for(const [id,tool]of Object.entries(manifest.tools)){assert.ok(inventory.includes(id));for(const mapping of tool.returns)assert.ok(inventory.includes(mapping.predicate));}

@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { generalKit, runtimeDirectory } from '../../harness/runtime-kit.mjs';
+import { generalKit, runtimeDirectory, kitReady, KIT_SKIP } from '../../harness/runtime-kit.mjs';
 import { refreshGeneralKits } from '../../harness/kit-install.mjs';
 
 const kit = generalKit();
-const { perform } = await import(pathToFileURL(path.join(kit, 'adapter.mjs')));
-const { context, sha } = await import(pathToFileURL(path.join(kit, 'lib.mjs')));
-const { installGeneral, parseKitInstall } = await import(pathToFileURL(path.join(kit, 'installer.mjs')));
+// The published rulith package has no kits/general yet: its tests skip instead of failing to import.
+const needsKit = { skip: !kitReady() && KIT_SKIP };
+const load = name => import(pathToFileURL(path.join(kit, name)));
+const [{ perform }, { sha }, { installGeneral, parseKitInstall }] = kitReady()
+  ? await Promise.all(['adapter.mjs', 'lib.mjs', 'installer.mjs'].map(load)) : [{}, {}, {}];
 const scratch = new URL('../../.scratch/', import.meta.url);
 fs.mkdirSync(scratch, { recursive: true });
 const json = (file, value) => fs.writeFileSync(file, JSON.stringify(value));
@@ -20,7 +22,7 @@ function fixture(t) {
   fs.mkdirSync(path.join(home, 'specs'), { recursive: true });
   const env = { ...process.env, RULITH_SOURCE_TYPE: 'file', RULITH_SOURCE_ACCESS: root, ENG_KIT_HOME: home };
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return { dir, root, home, env, ctx: context(env), call: (tool, args = {}) => perform(tool, args, env) };
+  return { dir, root, home, env, call: (tool, args = {}) => perform(tool, args, env) };
 }
 function check(f, name = 'request') {
   const test = 'check.mjs', code = 'process.exit(0)';
@@ -31,7 +33,7 @@ function check(f, name = 'request') {
   return { file, spec };
 }
 
-test('shipped acceptance discovery returns spec digests and rejects changed dependencies before execution', async t => {
+test('shipped acceptance discovery returns spec digests and rejects changed dependencies before execution', needsKit, async t => {
   const f = fixture(t); const { file, spec } = check(f);
   const proposed = (await f.call('acceptance')).rows[0];
   fs.writeFileSync(file, JSON.stringify({ files: spec.files, cwd: '.', command: spec.command }, null, 2));
@@ -47,7 +49,7 @@ test('shipped acceptance discovery returns spec digests and rejects changed depe
   await assert.rejects(f.call('test_v2', { check: '../escape' }), /acceptance check invalid/);
 });
 
-test('shipped acceptance discovery and named checks bind the digest and invalidate on a later write', async t => {
+test('shipped acceptance discovery and named checks bind the digest and invalidate on a later write', needsKit, async t => {
   const f = fixture(t); const { file, spec } = check(f);
   const discovery = await f.call('acceptance');
   assert.equal(discovery.rows.length, 1);
@@ -72,7 +74,7 @@ test('shipped acceptance discovery and named checks bind the digest and invalida
   assert.equal(failed.exit_code, 1); assert.equal(failed.spec_digest, revised.spec_digest);
 });
 
-test('shipped kit keeps legacy pinned tests, measurements and settings', async t => {
+test('shipped kit keeps legacy pinned tests, measurements and settings', needsKit, async t => {
   const f = fixture(t);
   json(path.join(f.home, 'settings.json'), { runDeadlineSeconds: 60, pollMaxWaitSeconds: 60, treeExclude: ['out'] });
   fs.writeFileSync(path.join(f.root, 'legacy.mjs'), 'process.exit(0)');
@@ -89,7 +91,7 @@ test('shipped kit keeps legacy pinned tests, measurements and settings', async t
   assert.equal((await f.call('measure_pinned', { spec_id: 'speed' })).rows[0].value_milli, 1234);
 });
 
-test('shipped general read/patch tools share tree state and list existing measurement specs', async t => {
+test('shipped general read/patch tools share tree state and list existing measurement specs', needsKit, async t => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.root, 'legacy.mjs'), 'process.exit(0)');
   json(path.join(f.home, 'specs', 'speed.json'), { output_dirs: ['out'] });
@@ -99,7 +101,7 @@ test('shipped general read/patch tools share tree state and list existing measur
   assert.equal((await f.call('read_v2', { path: 'added.txt' })).rows[0].digest, sha('hello\n'));
 });
 
-test('start dispatches kit-install arguments to the shipped installer and preserves pinned specs/settings', async t => {
+test('start dispatches kit-install arguments to the shipped installer and preserves pinned specs/settings', needsKit, async t => {
   const f = fixture(t);
   const manager = path.join(f.dir, 'manager'), instance = path.join(f.dir, 'instance');
   const worker = path.join(f.dir, 'worker'), toolsFile = path.join(worker, 'tools.json');
