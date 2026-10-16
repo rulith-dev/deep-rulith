@@ -2,3 +2,4 @@ node_modules/
 .scratch/
 *.log
 deep-rulith.json
+deep-rulith-p*.json

@@ -43,9 +43,8 @@ test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_i
   assert.match(persona, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason\./);
 });
 
-// D-1015c (owner 2026-10-15): the read-only web tools stay native. Only the first sentence changed and one sentence
-// follows it; the rest of the addendum is byte-identical to the one before (its SHA-256 is pinned below).
-test('the addendum names the native web tools; everything after its first two sentences is unchanged', () => {
+// D-1016a: the approved acceptance-contract addendum tail is pinned below.
+test('the addendum names the native web tools; both variants share the approved acceptance-contract tail', () => {
   const web = 'Web results leave nothing on the Board: when one is evidence for a result, record it on the Board with its URL as the source.';
   const headless = `Your tools are Rulith's three and the read-only tools web_search and web_fetch. ${web}`;
   const main = `Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch. ${web}`;
@@ -53,9 +52,10 @@ test('the addendum names the native web tools; everything after its first two se
   assert.equal(WEB_ADDENDUM, main + ADDENDUM.slice(headless.length));
   assert.equal(CHILD_ADDENDUM, ADDENDUM, 'web children use the headless addendum');
   assert.equal(createHash('sha256').update(ADDENDUM.slice(headless.length)).digest('hex'),
-    'f0b9733dbd59b4916c73681fe6d3df8ea1be845e4f8866192280f6630b23d7b5');
+    'd749f0181382941f6499b9eca17e75ac6283d45cf312d98fb76bb69d42184ed7');
   const inventory = read('harness/model-visible.md');
   assert.ok(inventory.includes(ADDENDUM));
+  assert.ok(inventory.includes(WEB_ADDENDUM));
   assert.ok(inventory.includes("Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch."));
 });
 
@@ -65,17 +65,19 @@ test('goal guidance declares an outcome without a generic test-to-completion rul
   assert.equal(examples[0].op, 'declare_goal');
   assert.deepEqual(Object.keys(examples[0]).sort(), ['desired', 'label', 'op']);
   assert.doesNotMatch(ADDENDUM, /"op":"add_axiom"/);
-  assert.match(ADDENDUM, /user's actual acceptance criteria/);
+  assert.match(ADDENDUM, /user's actual acceptance criteria for the exact target, version and measurement spec, signed by them/);
+  assert.match(ADDENDUM, /desired eng\.check_passed\(check, spec_digest\) from those receipts/);
+  assert.match(ADDENDUM, /do not write a rule for the goal's outcome/);
+  assert.match(ADDENDUM, /A check whose files you change needs a new spec and a new signature/);
 });
 
-test('every research.ledger word the instructions name matches the 0.4.0 package', () => {
+test('the research ledger stays installed but the generic addendum names none of its words', () => {
+  assert.doesNotMatch(ADDENDUM, /research\.ledger/);
+  assert.doesNotMatch(WEB_ADDENDUM, /research\.ledger/);
   const program = JSON.parse(read('research-ledger/program.json'));
   const signature = new Map(program.vocabulary.defines.map((word) => [word.id, word.args.join(', ')]));
   for (const word of program.vocabulary.defines) assert.ok(!word.args.includes('case_id'), word.id);
   assert.equal(signature.get('research.ledger.cites'), 'goal, from_goal');
-  const named = [...ADDENDUM.matchAll(/(research\.ledger\.[a-z_]+)\(([a-z_, ]+)\)/g)];
-  assert.ok(named.length >= 4);
-  for (const [, id, args] of named) assert.equal(signature.get(id), args, id);
   const inventory = read('harness/model-visible.md');
   for (const word of program.vocabulary.defines) assert.ok(inventory.includes(`${word.id}(${word.args.join(',')})`), word.id);
   const labels = read('research-ledger/method.txt');

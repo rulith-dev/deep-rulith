@@ -150,7 +150,7 @@ window.__ModuleLoader__.load({
     const STAGE_WORDS = { at_worker: "在本机执行", held: "等待决定", dispatched: "已派发" };
     // rulith/v4（A 包）的目标目录：每行 {goal, label, status, type?, deadline?, awaiting?, seat?}。
     const GOAL_WORDS = { running: "进行中", paused: "已暂停", completed: "已完成", ended: "已结束" };
-    const AWAITING_WORDS = { decision: "等人决定", sign_off: "等签收" };
+    const AWAITING_WORDS = { decision: "等人决定", sign_off: "等签收", acceptance: "验收待签字／待确认" };
 
     // The right column is this environment's execution, as the Rulith Runtime shows it beside a conversation:
     // goals, recent operations, the current frontier, and the local Worker's activity.
@@ -201,7 +201,15 @@ window.__ModuleLoader__.load({
           frontier.slice(0, 12).map((f, i) => h("div", { key: "f" + i, style: { padding: "2px 0", fontSize: 12 } }, show(f.label || f.predicate || f.gap || f) + (f.action ? " · " + show(f.action) : ""))))
         : none("没有进行中的目标。");
 
-      const needs = health && health.ok && health.available && Array.isArray(health.items) ? health.items : [];
+      // Acceptance belongs to this conversation's cached Board view; no additional Board read. The row opens the Agent's
+      // cases in Console when the launcher settings name a consoleUrl (health.goalsUrl); otherwise only the local workbench.
+      const healthy = health && health.ok && health.available;
+      const goalsUrl = healthy && typeof health.goalsUrl === "string" && /^https?:\/\//.test(health.goalsUrl) ? health.goalsUrl : "";
+      const needs = [...(healthy && Array.isArray(health.items) ? health.items : []),
+        ...directory.filter((goal) => goal.awaiting === "acceptance").map((goal) => {
+          const text = "验收待签字／待确认：" + show(goal.label || goal.goal) + " — 在 Console 的目标页签字或验收";
+          return goalsUrl ? { text, url: goalsUrl } : { text: text + "（未设置 consoleUrl：这里只能打开本机 Rulith）", fix: "workbench" };
+        })];
       const proposeFolder = async (source) => {
         setFolderNote("");
         try {

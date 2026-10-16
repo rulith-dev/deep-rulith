@@ -1,5 +1,0 @@
-{
-  "command": ["node", "test.mjs"],
-  "cwd": ".",
-  "output_dirs": ["build", "out"]
-}

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { consoleGoalsUrl } from '../../harness/web/rulith-runtime.mjs';
 import { installProjectContext, projectLine, readSourceBindings, reconcileProjectContext, resolveProject } from '../../harness/web/project-source.mjs';
 
 const windowsSources = [
@@ -149,25 +150,28 @@ test('Source reader reuses the existing Worker channel and projects only binding
   assert.deepEqual(await readSourceBindings(env, async () => ({ ok: true, json: async () => ({ sources: [] }) })), []);
 });
 
-test('Board panel renders the cached view, operations, receipt time and empty state beside this session project', () => {
+test('Board panel renders cached goals and acceptance attention with an on-demand workbench link', async () => {
   let plugin, column, columnProps;
+  const requests = [], opened = [];
+  const win = { location: { replace: url => opened.push(url) }, close() {} };
   const cwd = work + '/rulith-java';
   let values, index;
   const React = { createElement: (tag, props, ...children) => typeof tag === 'function' ? tag(props) : ({ tag, props, children }),
     useState: (initial) => [index < values.length ? values[index++] : initial, () => {}], useEffect() {}, useCallback: (fn) => fn,
     useSyncExternalStore: (_subscribe, snapshot) => snapshot() };
   vm.runInNewContext(fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'), {
-    window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } } }, setTimeout() {},
+    window: { open: () => win, __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } } }, setTimeout() {},
+    fetch: async (url, init) => { requests.push({ url, init }); return { json: async () => ({ ok: true, url: 'http://workbench.fixture/' }) }; },
   });
   plugin.apply({ effect() {}, inject() {}, sidebarRight: { mounted: { subscribe() {}, getSnapshot: () => 'java-conversation' } },
     slots: { inject(_name, fn) { if (fn.constructor.name !== 'GeneratorFunction') fn(); },
       register(opts, component) { if (opts.name === 'sidebar.right.pane.tab') { column = component; columnProps = opts.inject(); } } } });
   const seenAt = '2026-10-13T08:09:10.000Z';
   const boardData = { ok: true, available: true, view: {}, operations: [{ label: 'cached operation', state: 'done' }], seenAt };
-  const render = (workspace, data = boardData) => {
+  const render = (workspace, data = boardData, health = null) => {
     index = 0;
     values = [{ ok: true, workspace, project: { name: 'rulith-java' } },
-      data, { ok: true, available: true, state: 'online' }, null];
+      data, { ok: true, available: true, state: 'online' }, health];
     return column({ ...columnProps, useSessions: (selector) => selector({ byId: { 'java-conversation': { cwd } } }) });
   };
   const workerBlock = render(cwd).children.find((node) => node?.children?.[0]?.children?.[0]?.children?.[0] === '本机执行（Worker）');
@@ -181,6 +185,35 @@ test('Board panel renders the cached view, operations, receipt time and empty st
   assert.deepEqual(texts(render(cwd, { ok: true, available: true })), ['还没有 Board 视图。']);
   assert.deepEqual(texts(render(cwd, { ok: true, available: true, agentName: 'fixture', liveConversations: 2 })),
     ['还没有 Board 视图。']);
+  const attention = render(cwd, { ...boardData, view: { goals: { directory: [
+    { goal: 'root', label: '完成请求', status: 'running', awaiting: 'acceptance' },
+    { goal: 'other', label: '等决定的请求', status: 'running', awaiting: 'decision' },
+    { goal: 'unnamed', status: 'running', awaiting: 'acceptance' },
+  ] } } });
+  // Without a consoleUrl the row says it can only open the local workbench.
+  const local = '（未设置 consoleUrl：这里只能打开本机 Rulith）';
+  assert.ok(texts(attention).includes('验收待签字／待确认：完成请求 — 在 Console 的目标页签字或验收' + local));
+  assert.ok(texts(attention).includes('验收待签字／待确认：unnamed — 在 Console 的目标页签字或验收' + local));
+  assert.ok(!texts(attention).some(text => text.startsWith('验收待签字／待确认：等决定')));
+  assert.equal(requests.length, 0, 'rendering acceptance never requests a key or another Board view');
+  const nodes = node => typeof node !== 'object' || node === null ? [] : [node, ...(node.children ?? []).flat(Infinity).flatMap(nodes)];
+  const link = nodes(attention).find(node => node.tag === 'button' && node.children[0] === '打开本机 Rulith');
+  await link.props.onClick();
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, '/rulith/api/workbench');
+  assert.equal(requests[0].init.method, 'POST'); assert.deepEqual(opened, ['http://workbench.fixture/']);
+  assert.equal(win.opener, null);
+  assert.ok(!texts(render(cwd)).some(text => text.startsWith('验收待签字／待确认：')), 'a later view clears stale attention');
+  // With a consoleUrl the row links to the Agent's cases in Console, where the person signs; no workbench button.
+  const goalsUrl = 'https://console.fixture/console/#/cases?agentId=agent-1';
+  const signed = render(cwd, { ...boardData, view: { goals: { directory: [{ goal: 'root', label: '完成请求', awaiting: 'acceptance' }] } } },
+    { ok: true, available: true, items: [], goalsUrl });
+  assert.ok(texts(signed).includes('验收待签字／待确认：完成请求 — 在 Console 的目标页签字或验收'));
+  const anchor = nodes(signed).find(node => node.tag === 'a');
+  assert.equal(anchor.props.href, goalsUrl); assert.equal(anchor.children[0], '在 Console 处理');
+  assert.ok(!nodes(signed).some(node => node.tag === 'button' && node.children[0] === '打开本机 Rulith'));
+  const unsafe = render(cwd, { ...boardData, view: { goals: { directory: [{ goal: 'root', awaiting: 'acceptance' }] } } },
+    { ok: true, available: true, items: [], goalsUrl: 'javascript:alert(1)' });
+  assert.ok(!nodes(unsafe).some(node => node.tag === 'a'), 'only an http(s) Console address becomes a link');
 });
 
 test('Board panel polls the mounted sidebar session immediately and changes its content key on a session switch', async () => {
@@ -224,4 +257,11 @@ test('Board panel polls the mounted sidebar session immediately and changes its 
   assert.ok(requests.every((url) => url !== '/rulith/api/board'), 'no unscoped Board request');
   mounted = undefined;
   assert.equal(render(), null, 'an unmounted sidebar does not poll a default Board');
+});
+
+test('the Console goal link comes only from a configured http(s) consoleUrl and the selected Agent', () => {
+  assert.equal(consoleGoalsUrl('https://rulith.ai/anything?x=1', 'agent 1'), 'https://rulith.ai/console/#/cases?agentId=agent%201');
+  assert.equal(consoleGoalsUrl('http://127.0.0.1:5173', 'a'), 'http://127.0.0.1:5173/console/#/cases?agentId=a');
+  for (const [url, agent] of [[undefined, 'a'], ['', 'a'], ['https://rulith.ai', ''], ['not a url', 'a'], ['javascript:alert(1)', 'a']])
+    assert.equal(consoleGoalsUrl(url, agent), '');
 });

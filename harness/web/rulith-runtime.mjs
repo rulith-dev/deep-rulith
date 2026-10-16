@@ -23,7 +23,9 @@ export { awaitOutcome } from '../board-channel.mjs';
 export const name = 'rulith-runtime';
 export const inject = ['tools', 'webServer', 'llm'];
 
-/** The panel observes results already received on this Agent's channel; it never calls MCP. */
+/** The panel observes results already received on this Agent's channel; it never calls MCP.
+ * Goal directory rows (including awaiting:"acceptance") pass through unchanged. The browser
+ * builds acceptance attention rows from this session's view, using the on-demand workbench link. */
 export function cachedBoard(current, status, session) {
   // Session ids are opaque: unusual strings are routed through conversationKey's digest form.
   if (session !== undefined && typeof session !== 'string')
@@ -45,6 +47,15 @@ const listening = (port) => new Promise((resolve) => {
   socket.on('error', () => resolve(false));
 });
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
+// D-1016a: where the person signs or accepts a goal's criteria: the Agent's cases in Console (a goal's acceptance is on its
+// case page). Only from a consoleUrl the launcher settings name; without one the panel offers the local workbench instead.
+export function consoleGoalsUrl(consoleUrl, agentId) {
+  if (!consoleUrl || !agentId) return '';
+  let origin;
+  try { origin = new URL(consoleUrl); } catch { return ''; }
+  if (origin.protocol !== 'https:' && origin.protocol !== 'http:') return '';
+  return `${origin.origin}/console/#/cases?agentId=${encodeURIComponent(agentId)}`;
+}
 
 /** The Agent this dsh speaks for: the chosen instance, or the only paired local Agent in the manager home. */
 export function selectedAgent(home, agentName) {
@@ -334,8 +345,9 @@ export async function apply(ctx, config = {}) {
   const health = async () => {
     const agent = selectedAgent(home, chosenName());
     if (!agent) return { available: false };
+    const goalsUrl = consoleGoalsUrl(config.consoleUrl, agent.agentId);
     let reply;
-    try { reply = await manager('/manager/health'); } catch (error) { return { available: true, unsupported: true, note: String(error.message ?? error).slice(0, 200) }; }
+    try { reply = await manager('/manager/health'); } catch (error) { return { available: true, unsupported: true, goalsUrl, note: String(error.message ?? error).slice(0, 200) }; }
     const all = reply.health ?? {};
     const row = (all.agents ?? []).find((entry) => entry.agentId === agent.agentId);
     const items = [];
@@ -349,7 +361,7 @@ export async function apply(ctx, config = {}) {
       const here = (row.connections ?? []).filter((connection) => connection.registeredHere && connection.state === 'active');
       if (!here.length) items.push({ text: '这台电脑没有接上本机执行的连接：打开本机 Rulith 修复', fix: 'workbench' });
     }
-    return { available: true, gatewayState: all.gatewayState ?? 'unavailable', items };
+    return { available: true, gatewayState: all.gatewayState ?? 'unavailable', items, goalsUrl };
   };
   // D-1008d ②: "choose a folder and start". The selected Agent's local instance proposes the folder for a file Source
   // through its own setup route (the same no-credential proposal the Runtime wizard sends); the person then confirms it

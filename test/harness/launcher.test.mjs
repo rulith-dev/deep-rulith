@@ -281,3 +281,46 @@ test('the launcher passes a web search key only for a DeepSeek model, never prin
       assert.match(overlay, new RegExp(`- id: ${id}\n {2}disabled: true\n`), id);
   }
 });
+
+// D-1016a fix 1: a launcher refreshes the general kit only for its own Agent, and not at all while another launcher's
+// manager serves the port. A stand-in Runtime records each installer call; nothing real is installed or started.
+test('the launcher refreshes only its own Agent and skips the refresh while a manager already listens', async () => {
+  const net = await import('node:net');
+  const dir = temp();
+  try {
+    const runtime = path.join(dir, 'runtime'), calls = path.join(dir, 'calls.txt');
+    fs.mkdirSync(path.join(runtime, 'local'), { recursive: true }); fs.mkdirSync(path.join(runtime, 'kits', 'general'), { recursive: true });
+    fs.writeFileSync(path.join(runtime, 'kits', 'general', 'installer.mjs'), '');
+    fs.writeFileSync(path.join(runtime, 'local', 'rulith-local.mjs'),
+      `import fs from 'node:fs';\nfs.appendFileSync(process.env.FAKE_INSTALL_OUT, process.argv[6] + '\\n');\n`);
+    const managerHome = path.join(dir, 'manager-home');
+    const instances = ['mine', 'other'].map((agentName) => {
+      const directory = path.join(dir, agentName); fs.mkdirSync(directory);
+      fs.writeFileSync(path.join(directory, 'local.json'), JSON.stringify({ worker: { env: {
+        ENG_KIT_HOME: path.join(dir, `${agentName}-pins`), RULITH_WORKER_ROOT: directory, RULITH_TOOLS_FILE: path.join(directory, 'tools.json') } } }));
+      return { mode: 'local_agent', agentName, directory };
+    });
+    fs.mkdirSync(managerHome);
+    fs.writeFileSync(path.join(managerHome, 'registry.json'), JSON.stringify({ instances }));
+    const fakeDsh = path.join(dir, 'fake-dsh.mjs'); fs.writeFileSync(fakeDsh, '');
+    const server = net.createServer((socket) => socket.destroy());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const managerPort = server.address().port;
+    const file = path.join(dir, 'deep-rulith.json');
+    fs.writeFileSync(file, JSON.stringify({ dshBin: fakeDsh, dshHome: path.join(dir, 'dsh-home'), cwd: dir, managerHome, managerPort,
+      keyFile: path.join(dir, 'key.txt'), runtimeEntry: path.join(dir, 'runtime.mjs'), persona: path.join(dir, 'persona.txt'), agentName: 'mine' }));
+    const env = { ...process.env, RULITH_RUNTIME_DIR: runtime, FAKE_INSTALL_OUT: calls };
+    const start = () => new Promise((resolve) => {
+      import('node:child_process').then(({ execFile }) => execFile(process.execPath, [path.join(web, 'start-deep-rulith.mjs'), file],
+        { env, encoding: 'utf8', timeout: 30_000 }, (error, _stdout, stderr) => resolve({ error, stderr })));
+    });
+    const busy = await start();
+    assert.equal(busy.error, null, busy.stderr);
+    assert.match(busy.stderr, /another launcher\); general kit refresh skipped/);
+    assert.equal(fs.existsSync(calls), false);
+    await new Promise((resolve) => server.close(resolve));
+    const free = await start();
+    assert.equal(free.error, null, free.stderr);
+    assert.equal(fs.readFileSync(calls, 'utf8'), 'mine\n');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
