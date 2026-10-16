@@ -48,7 +48,7 @@ test('shipped acceptance discovery returns spec digests and rejects changed depe
   json(path.join(f.root, '.rulith', 'acceptance', 'invalid.json'), { command: [] });
   const discovered = await f.call('acceptance');
   assert.equal(discovered.rows.length, 1);
-  assert.deepEqual(discovered.errors, [{ check: 'invalid', error: 'acceptance spec invalid' }]);
+  assert.deepEqual(discovered.errors, [{ check: 'invalid', error: 'acceptance spec invalid: command must be an array of words (or one string with shell:true)' }]);
   await assert.rejects(f.call('test_v2', { check: '../escape' }), /acceptance check invalid/);
 });
 
