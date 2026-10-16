@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { conversationBoards, contextEnv, contextLines, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
+import { refreshGeneralKits } from '../kit-install.mjs';
 import { webSearchKey } from '../web-tools.mjs';
 
 const settingsFile = process.env.DEEP_RULITH_SETTINGS || process.argv[2];
@@ -162,7 +163,7 @@ const syncBrowserPlugin = () => {
   const target = path.join(s.dshHome, 'profiles', profile, 'node_modules', 'rulith-dsh-ui');
   fs.cpSync(fileURLToPath(new URL('./rulith-dsh-ui', import.meta.url)), target, { recursive: true });
 };
-if (!init) { syncBrowserPlugin(); writeModelRoute(); }
+if (!init) { refreshGeneralKits(s.managerHome); syncBrowserPlugin(); writeModelRoute(); }
 const args = init
   ? [s.dshBin, '--profile', profile, '--from-default-profile', 'web', '--patch', overlay, '--dump-config']
   : [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...process.argv.slice(3)];

@@ -9,7 +9,9 @@ import { restrictAgent, apply as applyGate, ADDENDUM } from '../../harness/rulit
 import { forDeployment } from '../../harness/web-tools.mjs';
 import { parseArgs, dshArgv, Budget, CAPS, startRole } from '../../harness/rulith-dsh-role.mjs';
 import { awaitOutcome } from '../../harness/web/rulith-runtime.mjs';
-import { sleep } from '../../engineering-work/lib.mjs';
+import { sleep } from '../../harness/host-utils.mjs';
+import { workerInventory } from '../../harness/worker-inventory.mjs';
+import { generalKit } from '../../harness/runtime-kit.mjs';
 
 const scratch=fileURLToPath(new URL('../../.scratch/',import.meta.url)); fs.mkdirSync(scratch,{recursive:true});
 const response=(result,id,status=200,extra={})=>new Response(status===202?null:JSON.stringify({jsonrpc:'2.0',id,result}),{status,headers:{'content-type':'application/json','mcp-session-id':'session',...extra}});
@@ -230,9 +232,8 @@ test('overlay disabled ids exist in pinned dsh base sources; runner depends on g
 });
 test('model-visible inventory contains every manifest id, primary predicate and fixed verdict',()=>{
   const inventory=fs.readFileSync(new URL('../../harness/model-visible.md',import.meta.url),'utf8');
-  const manifest=JSON.parse(fs.readFileSync(new URL('../../engineering-work/worker-tools.json',import.meta.url)));
+  const manifest=JSON.parse(fs.readFileSync(path.join(generalKit(), 'worker-tools.json')));
   for(const [id,tool]of Object.entries(manifest.tools)){assert.ok(inventory.includes(id));for(const mapping of tool.returns)assert.ok(inventory.includes(mapping.predicate));}
-  const adapter=fs.readFileSync(new URL('../../engineering-work/adapter.mjs',import.meta.url),'utf8');
-  const messages=adapter.match(/const messages = \[(.*?)\];/)[1];for(const m of messages.matchAll(/'([^']+)'/g))assert.ok(inventory.includes(m[1]),m[1]);
+  assert.ok(inventory.includes(workerInventory()), 'generated ids, predicate mappings and fixed verdicts stay current');
   assert.ok(inventory.includes(ADDENDUM));
 });

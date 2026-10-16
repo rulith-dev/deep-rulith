@@ -23,7 +23,9 @@ export { awaitOutcome } from '../board-channel.mjs';
 export const name = 'rulith-runtime';
 export const inject = ['tools', 'webServer', 'llm'];
 
-/** The panel observes results already received on this Agent's channel; it never calls MCP. */
+/** The panel observes results already received on this Agent's channel; it never calls MCP.
+ * Goal directory rows (including awaiting:"acceptance") pass through unchanged. The browser
+ * builds acceptance attention rows from this session's view, using the on-demand workbench link. */
 export function cachedBoard(current, status, session) {
   // Session ids are opaque: unusual strings are routed through conversationKey's digest form.
   if (session !== undefined && typeof session !== 'string')

@@ -1,3 +1,4 @@
+import { generalKit } from '../../harness/runtime-kit.mjs';
 // The one host channel, shared by all dsh hands.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -373,8 +374,8 @@ test('Get and read-only Execute are not reviewed; Set and unknown or effectful E
   await f.channel.call('Execute', { action: 'unknown' }); assert.equal(f.logs.length, 3);
 });
 
-test('installed engineering manifest exempts declared reads and reviews writes, commands and measurements', () => {
-  const kinds = readToolKinds(new URL('../../engineering-work/worker-tools.json', import.meta.url));
+test('shipped general manifest exempts declared reads and reviews writes, commands and measurements', () => {
+  const kinds = readToolKinds(`${generalKit()}/worker-tools.json`);
   for (const [id, kind] of Object.entries(kinds)) {
     const current = { actions: [{ action: 'worker_action', description: `[worker tool] ${id}` }] };
     assert.equal(isWrite('Execute', { action: 'worker_action' }, [current], kinds), kind !== 'read', id);

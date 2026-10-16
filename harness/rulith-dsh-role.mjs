@@ -6,7 +6,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { RulithMcp, surfaceAccepted } from './rulith-mcp.mjs';
 import { webSearchKey } from './web-tools.mjs';
-import { inside, killTree, readJson, save } from '../engineering-work/lib.mjs';
+import { inside, killTree, readJson, save } from './host-utils.mjs';
 
 export const CAPS = Object.freeze({ steps: 150, wallMs: 90 * 60 * 1000, promptTokens: 25000000 });
 // The model is the one set in the Runtime manager; there is no default provider.

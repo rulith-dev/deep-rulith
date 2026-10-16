@@ -23,11 +23,9 @@ It is also a worked example of a third-party agent harness using Rulith.
 | `harness/web/` | The dsh web profile overlay (`rulith-web.cordis.yml`), the host plugin that runs the Rulith Runtime manager beside dsh (`rulith-runtime.mjs`), the tool gate, the browser plugin (`rulith-dsh-ui`) and the launcher. |
 | `harness/` | The MCP bridge (`rulith-mcp.mjs`), the gate and persona text shared with the web profile, and an experimental headless role. |
 | `research-ledger/` | A general Capability for keeping an investigation (hypotheses, data, decisions) on the Board. |
-| `engineering-work/` | Worker adapters for programming work on one project directory (`eng.read`, `eng.write_file`, `eng.patch_file`, `eng.run`, `eng.test`, jobs, …) and the Capability that accredits their results. |
 | `test/` | Node tests. |
 
-Deep Rulith adds nothing to the Rulith Runtime; it uses the `rulith` package (0.13.0 or later),
-installed by `npm install` in this repository.
+Deep Rulith uses the general Worker kit shipped by the Rulith Runtime in `kits/general/`. The former local `engineering-work/` kit is retired. Until a Runtime release includes the general kit and acceptance contracts, use the local Runtime checkout below.
 
 ## What leaves your computer
 
@@ -48,18 +46,30 @@ Requires the Node.js version dsh requires.
 1. Run `npm install` in this repository (it installs the Rulith Runtime). Create a manager home
    directory and a key file holding a random key of at least 16 letters and digits; Deep Rulith
    starts the Runtime manager with that home and key.
-2. In Rulith Console create an Agent for this project. Build the `engineering_work` Capability
-   with `node engineering-work/pack/build-pack.mjs` (it declares Source `lab`), publish it from
-   your Publisher in Console and install it on the Agent.
+2. In Rulith Console create an Agent for this project. In the Runtime checkout run
+   `node kits/general/pack/build-pack.mjs`; publish and install `kits/general/pack/program-v2.json`
+   and `sources-v2.json` on a new Board (Source `lab`). These are version 2; the legacy v1
+   package has no acceptance bridge and cannot be hot-upgraded or installed beside v2.
 3. Install dsh in its own folder: `npm install @deepseek-ai/dsh@0.2.1-alpha.1`.
 4. Copy [`deep-rulith.example.json`](deep-rulith.example.json) and fill in the paths.
 5. Copy `deep-rulith.example.json` to `deep-rulith.json` in this folder (ignored by git) and fill in the paths. Create the dsh profile once: `Deep-Rulith.cmd --init` (or `node harness/web/start-deep-rulith.mjs deep-rulith.json --init`).
 6. Start: double-click `Deep-Rulith.cmd` (or `node harness/web/start-deep-rulith.mjs deep-rulith.json`) and open the printed URL.
 7. Bottom left → Rulith account: sign in, choose the Agent, enable the local Worker. Set the model
    (endpoint, model name, key) under 更多设置 (the Rulith workbench), then restart Deep Rulith.
-   Install the engineering tools on that Agent's Worker with `engineering-work/install.mjs`
-   ([engineering-work/README.md](engineering-work/README.md)), then in Console bind Source `lab`
-   to the project directory, pin the `eng.*` tools and lock the binding.
+   Install the shipped kit once with `rulith kit install general --agent <name> --kit-home <dir> --manager-home <dir>`
+   (or `node <Runtime checkout>/local/rulith-local.mjs kit install general` with the same flags).
+   Use the existing external `ENG_KIT_HOME`: its `settings.json`, legacy `specs/test.json` and
+   measurement specs remain compatible. Then in Console bind Source `lab` to the project,
+   pin the general kit tools and lock the binding. Restart Deep Rulith/its Worker after installing.
+
+The launcher refreshes each paired Agent with an existing kit home before starting dsh and the manager.
+The Runtime installer replaces the old adapters in `adapters/engineering-work/` and merges the twenty
+kit tools into that Agent's manifest, preserving other tools and setting the Worker timeout from
+`settings.json` (including general web limits). Initial pairing and Worker enablement remain in Console.
+
+| Launcher environment | Default | Purpose |
+| --- | --- | --- |
+| `RULITH_RUNTIME_DIR` | Installed `rulith` package | Local Runtime checkout used for `kit install general`; set to `D:/Work/rulith-runtime-kit` until the general-kit Runtime is published. This selects the kit installer; the manager still uses the configured `runtimeEntry`. |
 
 ## Tests
 
