@@ -8,7 +8,9 @@ export function conversationBoards(settings = {}, env = process.env) {
   if (value !== undefined && typeof value !== 'boolean') {
     throw new Error(`Deep Rulith: conversationBoards in the settings must be a boolean (got ${JSON.stringify(value)})`);
   }
-  return value !== false && env.RULITH_DSH_CONVERSATION_BOARDS !== '0';
+  if (env.RULITH_DSH_CONVERSATION_BOARDS === '0') return false;
+  if (env.RULITH_DSH_CONVERSATION_BOARDS === '1') return true;
+  return value ?? true;
 }
 
 /**

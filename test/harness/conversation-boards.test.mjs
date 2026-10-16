@@ -4,6 +4,7 @@ import { setImmediate } from 'node:timers/promises';
 import fs from 'node:fs';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { conversationKey, depthOf, toolsOf, DELEGATION_TOOLS } from '../../harness/subagents.mjs';
 import { RulithMcp, TOOLS } from '../../harness/rulith-mcp.mjs';
 import { ConversationBoards } from '../../harness/web/conversation-boards.mjs';
@@ -26,10 +27,175 @@ test('conversation keys survive restart; delegated children share the parent, us
   assert.equal(conversationKey(agent('fork-child', { parentSession: 'fork', origin: 'subagent', delegationDepth: 1 })), 'dsh:fork');
   assert.equal(depthOf(fork), 0);
   assert.deepEqual(toolsOf(fork), [...TOOLS, ...DELEGATION_TOOLS]);
-  for (const invalid of [undefined, '', 'space id', 'trailing\n', 'non-ascii-中', 'a'.repeat(197)]) {
+  for (const invalid of [undefined, 42]) {
     assert.throws(() => conversationKey(agent(invalid)), /session id refused/);
   }
   assert.throws(() => conversationKey(agent('orphan', { origin: 'subagent' })), /session id refused/);
+});
+
+test('unusual session ids have stable ASCII digest keys and remain readable through the panel', async (t) => {
+  const f = fixture(t);
+  for (const id of ['', 'space id', 'trailing\n', '\x00', 'non-ascii-中', 'a'.repeat(197)]) {
+    const a = agent(id);
+    const key = `dsh:h:${createHash('sha256').update(id).digest('hex')}`;
+    assert.equal(conversationKey(a), key);
+    assert.equal(conversationKey(agent('child', { parentSession: id, origin: 'subagent' })), key);
+    assert.match(key, /^[\x21-\x7e]{1,200}$/);
+    const holder = f.boards.holder(a);
+    await holder.channel.call('Get', {});
+    assert.deepEqual(cachedBoard({ boards: f.boards }, {}, id).view.goals, [key]);
+  }
+  // The reserved digest namespace must not collide with an ordinary printable id.
+  const unusual = conversationKey(agent('space id'));
+  assert.notEqual(conversationKey(agent(unusual.slice(4))), unusual);
+});
+
+test('migration documentation names lost default-Board reachability, fork semantics and discovery replacement', () => {
+  const readme = fs.readFileSync(new URL('../../harness/README.md', import.meta.url), 'utf8');
+  assert.match(readme, /next call[\s\S]*new, empty Board/);
+  assert.match(readme, /default Board's goals and pending calls are not reachable/);
+  assert.match(readme, /fork is its own conversation[\s\S]*whatever the setting/);
+  assert.match(readme, /replaces another host's active session on the default Board/);
+});
+
+const refusal = (status, reason, requestExecuted) => new Response(JSON.stringify({ error: {
+  code: -32000, message: 'untrusted Gateway text', data: { reason, requestExecuted },
+} }), { status, headers: { 'content-type': 'application/json' } });
+
+for (const stage of ['initialize', 'tools/call']) {
+  test(`Gateway conversation_limit at ${stage} reaches the model without retries`, async (t) => {
+    const f = fixture(t, { transport: (body) => body.method === stage ? refusal(429, 'conversation_limit', false) : undefined });
+    const a = f.boards.holder(main);
+    await assert.rejects(f.boards.request(a, 'Set', {}), /Agent.*limit.*active conversation Boards.*person.*end.*wait/i);
+    assert.equal(f.requests.filter((r) => r.method === stage).length, 1);
+    assert.deepEqual(f.delays, []);
+  });
+
+  test(`Gateway exploration_control_pending at ${stage} uses only bounded short retries`, async (t) => {
+    const f = fixture(t, { transport: (body) => body.method === stage ? refusal(409, 'exploration_control_pending', false) : undefined });
+    await assert.rejects(f.boards.request(f.boards.holder(main), 'Set', {}), /pending tier\/mode change.*blocks new conversations.*settles/i);
+    assert.ok(f.requests.filter((r) => r.method === stage).length <= 3);
+    assert.ok(f.delays.length <= 2 && f.delays.every((ms) => ms <= 1000));
+  });
+}
+
+for (const stage of ['initialize', 'tools/call'])
+for (const [status, reason, executed] of [[404, 'session_unavailable', undefined], [403, 'other_refusal', false], [200, 'rpc_refusal', false]]) {
+  test(`Gateway ${reason} at ${stage} reinitializes the same key and replays an unexecuted request once`, async (t) => {
+    let calls = 0;
+    const f = fixture(t, { transport: (body) => {
+      if (body.method === stage && ++calls === 1) return refusal(status, reason, executed);
+    } });
+    await f.boards.request(f.boards.holder(main), 'Set', { operations: [] });
+    assert.equal(calls, 2);
+    assert.equal(f.bridges.length, 2);
+    assert.ok(f.bridges.every((b) => b.conversationKey === 'dsh:parent'));
+    assert.deepEqual(f.delays, []);
+  });
+}
+
+test('repeated unexecuted refusal is bounded and never reported as outcome unknown', async (t) => {
+  const f = fixture(t, { transport: (body) => body.method === 'tools/call' ? refusal(403, 'other_refusal', false) : undefined });
+  await assert.rejects(f.boards.request(f.boards.holder(main), 'Execute', {}), (error) => {
+    assert.equal(error.reason, 'other_refusal');
+    assert.equal(error.requestExecuted, false);
+    assert.doesNotMatch(error.message, /outcome.*unknown/);
+    return true;
+  });
+  assert.equal(f.requests.filter((r) => r.method === 'tools/call').length, 2);
+});
+
+test('recovery of a later conversation publishes its timestamp alongside an earlier attached one', async (t) => {
+  const statuses = [];
+  const f = fixture(t, { report: (state, detail) => statuses.push({ state, ...detail }) });
+  const a = f.boards.holder(main), b = f.boards.holder(fork);
+  await f.boards.liveBridge(a); await f.boards.liveBridge(b);
+  b.bridge.close();
+  await f.boards.reconnectIdle();
+  assert.equal(statuses.at(-1).state, 'attached');
+  assert.ok(statuses.at(-1).reconnectedAt);
+  assert.equal(statuses.at(-1).reconnectedAt, b.reconnectedAt);
+});
+
+test('disposing a child retains an unobserved parent until the parent is disposed', async (t) => {
+  const f = fixture(t);
+  const a = f.boards.holder(child);
+  await a.channel.call('Get', {});
+  f.boards.disposeSession(child.session);
+  assert.equal(f.boards.size, 1);
+  assert.equal(a.bridge.closed, false);
+  f.boards.disposeSession(main.session);
+  assert.equal(f.boards.size, 0);
+});
+
+test('a child observed after parent disposal does not resurrect the disposed parent ownership', (t) => {
+  const f = fixture(t);
+  f.boards.disposeSession(main.session);
+  f.boards.holder(child);
+  f.boards.disposeSession(child.session);
+  assert.equal(f.boards.size, 0);
+});
+
+test('aggregate status keeps the worst live state when another conversation attaches or drops', async (t) => {
+  const statuses = [];
+  let release, waiting;
+  const started = new Promise((resolve) => { waiting = resolve; });
+  const f = fixture(t, { report: (state, detail) => statuses.push({ state, ...detail }),
+    wait: () => new Promise((resolve) => { release = resolve; waiting(); }) });
+  t.after(() => release?.());
+  const a = f.boards.holder(main);
+  await f.boards.liveBridge(a); a.bridge.close();
+  let failed = false;
+  f.transport((body, key) => { if (key === 'dsh:parent' && body.method === 'initialize' && !failed) { failed = true; throw new Error('offline'); } });
+  const reconnect = f.boards.liveBridge(a);
+  await started;
+  const b = f.boards.holder(fork);
+  await f.boards.liveBridge(b);
+  assert.equal(statuses.at(-1).state, 'reconnecting');
+  assert.equal(statuses.at(-1).liveConversations, 2);
+  f.boards.disposeSession(fork.session);
+  assert.equal(statuses.at(-1).state, 'reconnecting');
+  assert.equal(statuses.at(-1).liveConversations, 1);
+  release(); await reconnect;
+  assert.equal(statuses.at(-1).state, 'attached');
+  assert.ok(Number.isFinite(Date.parse(statuses.at(-1).reconnectedAt)));
+});
+
+test('idle reconnect is per conversation, shares attempts, preserves channels and stops after its budget', async (t) => {
+  const statuses = [];
+  const f = fixture(t, { patienceMs: 1, report: (state, detail) => statuses.push({ state, ...detail }) });
+  const a = f.boards.holder(main), b = f.boards.holder(fork);
+  await f.boards.liveBridge(a); await f.boards.liveBridge(b);
+  const channel = a.channel;
+  a.bridge.close();
+  await Promise.all([f.boards.reconnectIdle(), f.boards.reconnectIdle()]);
+  assert.equal(f.bridges.length, 3);
+  assert.equal(a.channel, channel);
+  assert.equal(b.bridge.closed, false);
+  assert.ok(statuses.at(-1).reconnectedAt);
+  a.bridge.close();
+  f.transport((body, key) => { if (key === 'dsh:parent' && body.method === 'initialize') throw new Error('offline'); });
+  await f.boards.reconnectIdle();
+  const attempts = f.bridges.length;
+  await f.boards.reconnectIdle();
+  assert.equal(f.bridges.length, attempts, 'idle ticks do not restart an exhausted outage budget');
+  assert.equal(statuses.at(-1).state, 'failed');
+  assert.equal(statuses.at(-1).liveConversations, 2);
+  f.transport(undefined);
+  await f.boards.request(a, 'Get', {});
+  assert.equal(statuses.at(-1).state, 'attached', 'a new model call can try again');
+});
+
+test('a failed write still allows proactive connection recovery without replaying the write', async (t) => {
+  const f = fixture(t);
+  const a = f.boards.holder(main);
+  f.transport((body) => { if (body.method === 'tools/call') throw new Error('offline'); });
+  await assert.rejects(f.boards.request(a, 'Set', {}), /outcome is unknown/);
+  f.transport(undefined);
+  await f.boards.reconnectIdle();
+  assert.equal(a.bridge.closed, false);
+  assert.equal(f.bridges.length, 2);
+  assert.equal(f.requests.filter((r) => r.method === 'tools/call').length, 1);
 });
 
 function fixture(t, options = {}) {
@@ -40,7 +206,8 @@ function fixture(t, options = {}) {
       fetchImpl: async (_url, init) => {
         const body = JSON.parse(init.body);
         requests.push({ ...body, headers: init.headers, bridge });
-        await transport?.(body, key, bridge);
+        const refusal = await transport?.(body, key, bridge);
+        if (refusal) return refusal;
         const headers = { 'content-type': 'application/json', 'mcp-session-id': `mcp-${bridges.indexOf(bridge)}` };
         if (body.method === 'notifications/initialized') return new Response(null, { status: 202, headers });
         return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {
@@ -54,7 +221,10 @@ function fixture(t, options = {}) {
     catch (error) { bridge.close(); throw error; }
   };
   const boards = new ConversationBoards({ connect, shadow: () => new ShadowReviewer({ enabled: false }),
-    wait: async (ms, signal) => { assert.equal(signal.aborted, false); delays.push(ms); }, ...options });
+    wait: async (ms, signal) => {
+      assert.equal(signal.aborted, false); delays.push(ms);
+      assert.ok(delays.length <= 4, 'stub retry budget exceeded');
+    }, ...options });
   t.after(() => boards.close());
   return { boards, requests, bridges, delays, transport: (fn) => { transport = fn; } };
 }
@@ -187,7 +357,7 @@ test('a conversation waiting to reconnect cannot block another; disposal cancels
   assert.equal(f.boards.size, 1);
 });
 
-async function runtimeFixture(t, enabled = true) {
+async function runtimeFixture(t, enabled = true, initialAgents = []) {
   // All I/O is mocked: no manager, credentials, socket, status file or Gateway is accessed.
   const previousFlag = process.env.RULITH_DSH_CONVERSATION_BOARDS;
   process.env.RULITH_DSH_CONVERSATION_BOARDS = enabled ? '1' : '0';
@@ -196,7 +366,8 @@ async function runtimeFixture(t, enabled = true) {
     else process.env.RULITH_DSH_CONVERSATION_BOARDS = previousFlag;
   });
   const requests = [], statuses = [], definitions = [], effects = [], listeners = new Map();
-  let server;
+  let server, tick, transport;
+  t.mock.method(globalThis, 'setInterval', (fn, ms) => { assert.equal(ms, 3000); tick = fn; return 0; });
   t.mock.method(net, 'connect', (_options, callback) => {
     const socket = new EventEmitter(); socket.destroy = () => {};
     queueMicrotask(callback); return socket;
@@ -212,6 +383,7 @@ async function runtimeFixture(t, enabled = true) {
   t.mock.method(fs, 'writeFileSync', (_file, value) => statuses.push(JSON.parse(value)));
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     const body = JSON.parse(init.body); requests.push({ ...body, headers: init.headers });
+    await transport?.(body);
     const headers = { 'content-type': 'application/json', 'mcp-session-id': 'fixture-mcp-session' };
     if (body.method === 'notifications/initialized') return new Response(null, { status: 202, headers });
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {
@@ -223,7 +395,10 @@ async function runtimeFixture(t, enabled = true) {
     } }), { headers });
   });
   const ctx = {
-    on(event, fn) { const handlers = listeners.get(event) ?? []; handlers.push(fn); listeners.set(event, handlers); },
+    on(event, fn) {
+      const handlers = listeners.get(event) ?? []; handlers.push(fn); listeners.set(event, handlers);
+      if (event === 'agent/created') for (const agent of initialAgents) fn({ agent });
+    },
     effect(fn) { effects.push(fn()); },
     tools: { register(def) { definitions.push(def); return () => {}; } },
     webServer: { register(route) { server = route; return () => {}; } },
@@ -238,8 +413,30 @@ async function runtimeFixture(t, enabled = true) {
       { writeHead(code) { assert.equal(code, 200); }, end(body) { reply = JSON.parse(body); } });
     return reply;
   };
-  return { requests, statuses, definitions, emit, panel };
+  return { requests, statuses, definitions, emit, panel, tick: () => tick(), transport: (fn) => { transport = fn; } };
 }
+
+test('runtime tick proactively recovers a failed conversation without another model call', async (t) => {
+  const f = await runtimeFixture(t);
+  f.emit('agent/created', { agent: main });
+  f.transport((body) => { if (body.method === 'tools/call' && body.params.name === 'Set') throw new Error('offline'); });
+  await assert.rejects(f.definitions.find((d) => d.name === 'Set').execute({}, { agent: main }), /outcome is unknown/);
+  f.transport(undefined);
+  const calls = f.requests.filter((r) => r.method === 'tools/call').length;
+  await f.tick(); await setImmediate();
+  assert.equal(f.statuses.at(-1).state, 'attached');
+  assert.ok(f.statuses.at(-1).reconnectedAt);
+  assert.equal(f.statuses.at(-1).liveConversations, 1);
+  assert.equal(f.requests.filter((r) => r.method === 'tools/call').length, calls);
+});
+
+test('attachment discovers tools on the first known conversation and reuses its connection', async (t) => {
+  const f = await runtimeFixture(t, true, [main]);
+  assert.ok(f.requests.every((r) => r.headers['X-Rulith-Conversation'] === 'dsh:parent'));
+  await f.definitions.find((d) => d.name === 'Get').execute({}, { agent: main });
+  assert.equal(f.requests.filter((r) => r.method === 'initialize').length, 1);
+  assert.equal(f.statuses.at(-1).liveConversations, 1);
+});
 
 test('runtime routes registered tools by conversation, publishes only aggregate status, and disposes on dsh events', async (t) => {
   const { requests, statuses, definitions, emit, panel } = await runtimeFixture(t);
@@ -284,8 +481,8 @@ test('Board endpoint reads only the requested session cache, including children 
   assert.deepEqual(await panel('?session=unknown'), empty);
   assert.deepEqual(await panel(), { ok: true, available: true, agentName: 'fixture', liveConversations: 2 });
   for (const id of ['', 'space id', 'trailing\n', '\x00', '\x7f', '中文', 'a'.repeat(197)])
-    assert.deepEqual(await panel('?session=' + encodeURIComponent(id)), { ok: false, teaching: 'Invalid session id.' });
-  assert.equal(requests.length, before, 'panel reads and invalid queries never call MCP');
+    assert.deepEqual(await panel('?session=' + encodeURIComponent(id)), empty);
+  assert.equal(requests.length, before, 'panel reads with opaque session ids never call MCP');
   assert.equal((await panel()).liveConversations, 2, 'panel reads do not create holders');
   assert.doesNotMatch(JSON.stringify([parent, other, empty]), /dsh:|fixture-token|fixture-manager-key|fixture-mcp-session/);
   emit('session/disposed', main.session);
@@ -304,7 +501,7 @@ test('Board endpoint preserves the shared cached Board with the feature off, reg
   const shared = await panel();
   assert.equal(shared.view.goals.directory[0].label, 'parent');
   for (const id of ['parent', 'child', 'unknown']) assert.deepEqual(await panel('?session=' + id), shared);
-  assert.deepEqual(await panel('?session='), { ok: false, teaching: 'Invalid session id.' });
+  assert.deepEqual(await panel('?session='), shared);
   assert.equal(requests.length, before);
   assert.ok(requests.every((r) => r.headers['X-Rulith-Conversation'] === undefined));
 });

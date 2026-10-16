@@ -46,25 +46,43 @@ Headless disables delegation and shadow because its caps and main-turn lifetime 
 
 ## Conversation Boards (D-1015b)
 
-Web conversations use separate Boards by default. The exact key is `dsh:<session.id>` for a top-level conversation.
+Web conversations use separate Boards by default. Turning this on moves each existing conversation's next call
+to a new, empty Board: the default Board's goals and pending calls are not reachable from that conversation.
+A user fork is its own conversation (main tools, its own Board in separate-Board mode), whatever the setting;
+with separate Boards off, all conversations use the default Board, including forks.
+The exact key is `dsh:<session.id>` for a top-level conversation.
 A delegated child instead uses `dsh:<session.header.parentSession>`. Delegation means the maximum of persisted
 `header.delegationDepth`, live `options.subagentDepth`, and 1 when `header.origin === 'subagent'` is positive.
 Depth is limited to 1 by admission. A user fork has `parentSession` (seed lineage) but no origin/delegation depth;
 it therefore owns `dsh:<its own session.id>`, and its children use that fork's key. No random or process-local
-identifier enters the key, so cold resume and launcher restart preserve it. Missing, empty, non-printable, non-ASCII,
-space-containing or over-196-character session ids are refused; the `dsh:` prefix keeps the key within 200 characters.
+identifier enters the key, so cold resume and launcher restart preserve it. Empty, non-printable, non-ASCII,
+space-containing or over-196-character string ids use `dsh:h:<sha256 hex of the id>` instead. The `h:` prefix is
+reserved: literal ids starting with it also use the digest form, preventing aliases. Keys stay within 200 printable
+ASCII characters. A missing or non-string id is refused.
 
 This relies on installed dsh's `dsh-subagent/lib/index.js` `childSessionMeta`: it writes `parentSession`,
 `origin: 'subagent'` and `delegationDepth`. `dsh-session/lib/index.js` `fork` writes `parentSession` and `isSeeded`
 without delegation metadata. `isSeeded` alone does not identify a child: both a user fork and `subagent_fork` can be seeded.
 
-Agent selection, credentials and tool registration stay launcher-wide. Attachment briefly opens a headerless MCP
-connection solely to discover the authority's unchanged tool schemas, then closes it. Each conversation's first
-Rulith call opens its own MCP session, sending `X-Rulith-Conversation` on initialize, initialized notification,
+Agent selection, credentials and tool registration stay launcher-wide. If a conversation is already known at
+attachment, its connection lists tools and is retained for its calls. Otherwise attachment briefly opens a headerless
+session on the default Board solely to list tools, then closes it.
+This replaces another host's active session on the default Board.
+Initial tool registration can precede the first conversation, so its connection cannot supply that initial listing.
+Other conversation connections open on their first Rulith call. Each sends `X-Rulith-Conversation` on initialize, initialized notification,
 tool listing and every tool call. Main and delegated children share the channel; unrelated conversations have
 independent FIFOs, operation slots, focused goals, Board caches, block counters and shadow history. Reconnect
 keeps the key and channel, shares concurrent attempts, and backs off from 2 to 30 seconds within
-`RULITH_DSH_RECONNECT_PATIENCE_MS` (default 180000). A failed Get can be repeated; an uncertain write is never replayed.
+`RULITH_DSH_RECONNECT_PATIENCE_MS` (default 180000). Every 3 seconds the host also checks existing live connections
+and proactively reconnects closed ones independently, preserving their channels. It reports the worst live state
+(`failed`, then `reconnecting`, then `attached`), `liveConversations`, and `reconnectedAt` on recovery. An idle outage
+gets one bounded retry budget; after exhaustion only a new model call starts another attempt. This restores idle
+recovery without letting one conversation block Agent selection or retry forever in the background.
+A failed Get can be repeated; an uncertain write is never replayed. Gateway `conversation_limit` is reported directly
+without retries; `exploration_control_pending` during connection setup gets at most two short waits (250/500 ms).
+`session_unavailable` or an explicit `requestExecuted: false` instead reinitializes the same key and replays the call
+once, except for the capacity and pending-change refusals above. A refusal known to precede execution is never
+described as an unknown outcome.
 
 `session/disposed` releases that session's ownership; the last parent/child owner closes the Board channel,
 shadow and bridge and cancels in-progress connection/backoff. Agent detach closes all of its channels. Reopening
@@ -73,7 +91,8 @@ dsh session's own log/messages; no shared Board cache exists there and their ren
 The Agent-wide panel and `rulith-runtime-status.json` expose counts, never conversation keys or credentials.
 
 Set launcher `conversationBoards` to `false`, or set `RULITH_DSH_CONVERSATION_BOARDS=0`, to use the shared default
-Board and omit the header. The environment switch wins even over an explicit `true`; non-boolean settings refuse
+Board and omit the header. The environment switch wins in both directions: `0` turns it off and `1` turns it on;
+absent uses the setting, and an absent setting defaults to on. Non-boolean settings refuse
 startup. The shared connection then lives until Agent detach. Headless mode retains its existing behavior.
 Old Gateways may ignore the header; Gateway-side Board isolation requires the parallel D-1015b Gateway change.
 

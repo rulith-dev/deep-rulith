@@ -8,6 +8,18 @@ export const inject = ['tools'];
 /** The v4 surface: exactly the three tools, each once, in one page. */
 export const surfaceAccepted = (listed) => !listed?.nextCursor && Array.isArray(listed?.tools) && listed.tools.length === TOOLS.length
   && new Set(listed.tools.map(t => t.name)).size === TOOLS.length && TOOLS.every(t => listed.tools.some(x => x.name === t));
+
+function refusalError(error, status) {
+  const reason = error?.data?.reason ?? error?.data?.code
+    ?? (error?.message === 'connection_replaced' || status === 409 ? 'connection_replaced' : undefined);
+  const message = reason === 'conversation_limit'
+    ? 'This Agent has reached its limit of active conversation Boards. The person must end or wait out old conversations.'
+    : reason === 'exploration_control_pending'
+      ? 'A pending tier/mode change of the Agent blocks new conversations until it settles.'
+      : reason === 'session_unavailable' ? 'The Rulith session is unavailable; this request was not executed.'
+        : reason === 'connection_replaced' ? 'connection_replaced' : 'MCP request refused';
+  return Object.assign(new Error(message), { reason, requestExecuted: error?.data?.requestExecuted, status });
+}
 export class RulithMcp {
   constructor({ url, token, conversationKey, fetchImpl = fetch, identity = () => {}, timeoutMs = 75_000, ceilingMs = 600_000 }) {
     const endpoint = new URL(url);
@@ -46,8 +58,11 @@ export class RulithMcp {
     let response;
     try { response = await this.fetch(this.url, { method: 'POST', headers, redirect: 'error', signal, body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }) }); }
     catch { this.closed = true; throw new Error('MCP transport failed'); }
-    if (response.status === 409) { this.closed = true; throw new Error('connection_replaced'); }
-    if (!response.ok) { this.closed = true; throw new Error('MCP request refused'); }
+    if (!response.ok) {
+      this.closed = true;
+      const body = await response.json().catch(() => null);
+      throw refusalError(body?.error, response.status);
+    }
     if (method === 'initialize') this.session = response.headers.get('mcp-session-id') ?? '';
     if (notification && (response.status === 202 || response.status === 204)) return;
     let message;
@@ -74,8 +89,7 @@ export class RulithMcp {
       } else message = await response.json();
     } catch (e) { this.closed = true; throw new Error(e.message === 'connection_replaced' ? e.message : 'MCP response unreadable'); }
     if (message?.error) {
-      const replaced = message.error.data?.reason === 'connection_replaced' || message.error.data?.code === 'connection_replaced' || message.error.message === 'connection_replaced';
-      this.closed = true; throw new Error(replaced ? 'connection_replaced' : 'MCP request refused');
+      this.closed = true; throw refusalError(message.error, response.status);
     }
     if (message?.id !== id || !message.result) { this.closed = true; throw new Error('MCP response unreadable'); }
     const meta = message.result._meta?.[NAMESPACE];

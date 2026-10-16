@@ -16,12 +16,13 @@ import { COMPACTION_RATIO, COMPACTION_HEADROOM_TOKENS, COMPACTION_SUMMARY_MAX_TO
 const web = fileURLToPath(new URL('../../harness/web/', import.meta.url));
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'deep-rulith-launcher-'));
 
-test('conversation Boards default on; the setting and environment can each turn them off', () => {
+test('conversation Boards default on; the environment overrides the setting in both directions', () => {
   assert.equal(conversationBoards({}, {}), true);
   assert.equal(conversationBoards({ conversationBoards: true }, {}), true);
   assert.equal(conversationBoards({ conversationBoards: false }, {}), false);
   assert.equal(conversationBoards({}, { RULITH_DSH_CONVERSATION_BOARDS: '0' }), false);
   assert.equal(conversationBoards({ conversationBoards: true }, { RULITH_DSH_CONVERSATION_BOARDS: '0' }), false);
+  assert.equal(conversationBoards({ conversationBoards: false }, { RULITH_DSH_CONVERSATION_BOARDS: '1' }), true);
   for (const bad of [null, 'false', 0, [], {}]) assert.throws(() => conversationBoards({ conversationBoards: bad }, {}), /must be a boolean/);
 });
 
@@ -108,7 +109,9 @@ function launch(settings, modelDefaults, extraEnv = {}) {
   if (modelDefaults) fs.writeFileSync(path.join(s.managerHome, 'model-defaults.json'), JSON.stringify({ defaults: modelDefaults }));
   const file = path.join(dir, 'deep-rulith.json');
   fs.writeFileSync(file, JSON.stringify(s));
-  const run = spawnSync(process.execPath, [path.join(web, 'start-deep-rulith.mjs'), file], { env: { ...process.env, RULITH_DSH_CONVERSATION_BOARDS: '1', ...extraEnv, FAKE_DSH_OUT: out }, encoding: 'utf8', timeout: 30_000 });
+  const env = { ...process.env, ...extraEnv, FAKE_DSH_OUT: out };
+  if (!Object.hasOwn(extraEnv, 'RULITH_DSH_CONVERSATION_BOARDS')) delete env.RULITH_DSH_CONVERSATION_BOARDS;
+  const run = spawnSync(process.execPath, [path.join(web, 'start-deep-rulith.mjs'), file], { env, encoding: 'utf8', timeout: 30_000 });
   const started = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : null;
   fs.rmSync(dir, { recursive: true, force: true });
   return { run, started };
@@ -116,7 +119,8 @@ function launch(settings, modelDefaults, extraEnv = {}) {
 
 test('the launcher passes conversationBoards to the runtime and rejects invalid settings before dsh starts', () => {
   for (const [settings, env, expected] of [[{}, {}, '1'], [{ conversationBoards: false }, {}, '0'],
-    [{ conversationBoards: true }, { RULITH_DSH_CONVERSATION_BOARDS: '0' }, '0']]) {
+    [{ conversationBoards: true }, { RULITH_DSH_CONVERSATION_BOARDS: '0' }, '0'],
+    [{ conversationBoards: false }, { RULITH_DSH_CONVERSATION_BOARDS: '1' }, '1']]) {
     const ok = launch(settings, undefined, env);
     assert.equal(ok.run.status, 0, ok.run.stderr);
     assert.equal(ok.started.env.RULITH_DSH_CONVERSATION_BOARDS, expected);

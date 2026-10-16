@@ -15,7 +15,7 @@ import { installProjectContext, readSourceBindings, resolveProject } from './pro
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
-import { handOf } from '../subagents.mjs';
+import { handOf, conversationKey } from '../subagents.mjs';
 import { ConversationBoards } from './conversation-boards.mjs';
 import { conversationBoards } from './launcher-settings.mjs';
 export { awaitOutcome } from '../board-channel.mjs';
@@ -25,8 +25,8 @@ export const inject = ['tools', 'webServer', 'llm'];
 
 /** The panel observes results already received on this Agent's channel; it never calls MCP. */
 export function cachedBoard(current, status, session) {
-  // Match conversationKey's session-id rules, including its bound before the dsh: prefix.
-  if (session !== undefined && (typeof session !== 'string' || !session || session.length > 196 || /[^\x21-\x7e]/.test(session)))
+  // Session ids are opaque: unusual strings are routed through conversationKey's digest form.
+  if (session !== undefined && typeof session !== 'string')
     throw new Error('Invalid session id.');
   if (!current) return { available: false, tools: status };
   if (current.boards?.enabled) {
@@ -131,8 +131,9 @@ export async function apply(ctx, config = {}) {
     finally { signal?.removeEventListener('abort', abort); }
   };
   const attach = async (agent) => {
-    // Discover the authority's tool descriptions once. Conversation connections are opened on their first call.
-    const { bridge, listed } = await connect(agent.token);
+    // Reuse the first known conversation for discovery. On startup registration can precede all sessions.
+    const first = separateBoards ? sessions.values().next().value : undefined;
+    const { bridge, listed } = await connect(agent.token, first ? conversationKey(first) : undefined);
     const holder = { token: agent.token, agentName: agent.agentName, disposers: [] };
     holder.boards = new ConversationBoards({ enabled: separateBoards,
       connect: (key, signal) => connect(agent.token, key, signal),
@@ -147,8 +148,9 @@ export async function apply(ctx, config = {}) {
         const env = row ? readJson(path.join(row.directory, 'local.json'))?.worker?.env ?? {} : {};
         return readToolKinds(env.RULITH_TOOLS_FILE);
       } });
-    if (separateBoards) bridge.close();
-    else holder.boards.holder().bridge = bridge;
+    if (!separateBoards) holder.boards.holder().bridge = bridge;
+    else if (first && sessions.get(first.session.id) === first) holder.boards.holder(first).bridge = bridge;
+    else bridge.close();
     for (const agent of sessions.values()) holder.boards.observe(agent);
     holder.disposers = listed.tools.map((tool) => ctx.tools.register({
       name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
@@ -184,7 +186,8 @@ export async function apply(ctx, config = {}) {
       else if (agent.token !== current?.token) {
         drop(); await attach(agent); report('attached', { agentName: agent.agentName, tools: [...TOOLS] });
       }
-      // Each channel reconnects patiently on demand; an idle conversation cannot block another or the Agent selector.
+      // Run independently: one idle conversation's retry budget cannot block another or Agent selection.
+      void current?.boards.reconnectIdle();
     } catch (error) { drop(); report('failed', { error: String(error?.message ?? error).slice(0, 300) }); } finally { busy = false; }
   };
   const timer = setInterval(tick, 3000);

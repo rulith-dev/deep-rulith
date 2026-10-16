@@ -2,6 +2,7 @@
 // It also covers cold resume; the scope effect releases a reservation on rollback or disposal.
 import { TOOLS } from './rulith-mcp.mjs';
 import { offeredWebTools } from './web-tools.mjs';
+import { createHash } from 'node:crypto';
 
 export const DELEGATION_TOOLS = Object.freeze(['subagent', 'subagent_fork', 'send_message', 'interrupt_agent']);
 export const MAX_CHILDREN = 4;
@@ -11,7 +12,10 @@ export const depthOf = (agent) => Math.max(agent?.session?.header?.delegationDep
 export function conversationKey(agent) {
   const session = agent?.session;
   const id = depthOf(agent) ? session?.header?.parentSession : session?.id;
-  if (typeof id !== 'string' || !id || id.length > 196 || /[^\x21-\x7e]/.test(id)) throw new Error('Rulith conversation session id refused');
+  if (typeof id !== 'string') throw new Error('Rulith conversation session id refused');
+  // Reserve h: so a literal session id cannot alias a digest key.
+  if (!id || id.length > 196 || /[^\x21-\x7e]/.test(id) || id.startsWith('h:'))
+    return `dsh:h:${createHash('sha256').update(id).digest('hex')}`;
   return `dsh:${id}`;
 }
 export const handOf = (agent) => depthOf(agent) ? agent.session.id : 'main';
