@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { generalKit, runtimeDirectory, kitReady, KIT_SKIP } from '../../harness/runtime-kit.mjs';
-import { refreshGeneralKits } from '../../harness/kit-install.mjs';
+import net from 'node:net';
+import { installerRefusal, managerListening, refreshGeneralKits } from '../../harness/kit-install.mjs';
 
 const kit = generalKit();
 // The published rulith package has no kits/general yet: its tests skip instead of failing to import.
@@ -152,8 +153,32 @@ test('kit refresh isolates agents, skips unprepared/signed-out entries, and stop
   assert.deepEqual(calls.map(c => c[1]), ['one', 'two'].map(name => [path.join(runtimeDirectory(env), 'local', 'rulith-local.mjs'),
     'kit', 'install', 'general', '--agent', name, '--kit-home', `/${name}-pins`, '--manager-home', '/manager']));
   assert.ok(!reads.some(file => file.includes('/out/')));
-  assert.throws(() => refreshGeneralKits('/manager', { env, readJson, run: () => ({ status: 2, stderr: 'private material' }) }),
+  // A launcher that names its Agent refreshes only that Agent.
+  calls.length = 0;
+  assert.equal(refreshGeneralKits('/manager', { agent: 'two', env, readJson, run: (...args) => { calls.push(args); return { status: 0 }; } }), 1);
+  assert.deepEqual(calls.map(c => c[1][5]), ['two']);
+  assert.equal(refreshGeneralKits('/manager', { agent: 'absent', env, readJson, run: () => assert.fail('no row') }), 0);
+  // A refusal names the Agent; only the installer's fixed words are shown, never other child output.
+  assert.throws(() => refreshGeneralKits('/manager', { env, readJson, run: () => ({ status: 1, stderr: 'D:/private/local.json: private material' }) }),
+    /^Error: Deep Rulith: general kit installation failed for Agent "one"\.$/);
+  assert.throws(() => refreshGeneralKits('/manager', { env, readJson, run: () => ({ status: 1, stderr: 'warning\nsettings refused\n' }) }),
+    /^Error: Deep Rulith: general kit installation failed for Agent "one": settings refused\.$/);
+  assert.throws(() => refreshGeneralKits('/manager', { env, readJson, run: () => ({ status: 2, missingKit: true }) }),
     /^Error: Deep Rulith: general kit installation failed; use a Runtime with kits\/general \(RULITH_RUNTIME_DIR\)\.$/);
+  for (const words of ['Expected one paired Agent; found 0', 'Pair the Agent and enable its Worker once first', 'Invalid Worker tool manifest',
+    'Installation path contains a link', 'Worker paths must be absolute', '--agent and --kit-home are required'])
+    assert.equal(installerRefusal(`${words}\r\n`), words);
+  for (const other of ['', 'Unexpected token } in JSON at position 3', "ENOENT: no such file or directory, open 'D:/x/registry.json'", 'settings refused: D:/x'])
+    assert.equal(installerRefusal(other), '');
+});
+
+test('a manager already listening on the port is detected so the launcher skips the refresh', async t => {
+  const server = net.createServer(socket => socket.destroy());
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  assert.equal(await managerListening(port), true);
+  await new Promise(resolve => server.close(resolve));
+  assert.equal(await managerListening(port), false);
 });
 
 test('an old Runtime without the general kit is refused before its CLI can run', t => {

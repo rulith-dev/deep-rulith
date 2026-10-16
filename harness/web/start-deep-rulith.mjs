@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { conversationBoards, contextEnv, contextLines, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
-import { refreshGeneralKits } from '../kit-install.mjs';
+import { managerListening, refreshGeneralKits } from '../kit-install.mjs';
 import { webSearchKey } from '../web-tools.mjs';
 
 const settingsFile = process.env.DEEP_RULITH_SETTINGS || process.argv[2];
@@ -163,7 +163,15 @@ const syncBrowserPlugin = () => {
   const target = path.join(s.dshHome, 'profiles', profile, 'node_modules', 'rulith-dsh-ui');
   fs.cpSync(fileURLToPath(new URL('./rulith-dsh-ui', import.meta.url)), target, { recursive: true });
 };
-if (!init) { refreshGeneralKits(s.managerHome); syncBrowserPlugin(); writeModelRoute(); }
+// The kit refresh covers this launcher's own Agent (agentName) when the settings name one. A manager already listening on
+// the port belongs to another launcher sharing this manager home; its Workers run on the files a refresh rewrites, so the
+// refresh waits for a start that brings the manager up itself.
+if (!init) {
+  if (await managerListening(Number(s.managerPort ?? 7790)))
+    console.error('Deep Rulith: a Rulith manager already runs on this port (another launcher); general kit refresh skipped.');
+  else refreshGeneralKits(s.managerHome, { agent: s.agentName });
+  syncBrowserPlugin(); writeModelRoute();
+}
 const args = init
   ? [s.dshBin, '--profile', profile, '--from-default-profile', 'web', '--patch', overlay, '--dump-config']
   : [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...process.argv.slice(3)];
