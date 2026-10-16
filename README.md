@@ -60,16 +60,31 @@ Requires the Node.js version dsh requires.
    (or `node <Runtime checkout>/local/rulith-local.mjs kit install general` with the same flags).
    Use the existing external `ENG_KIT_HOME`: its `settings.json`, legacy `specs/test.json` and
    measurement specs remain compatible. Then in Console bind Source `lab` to the project,
-   pin the general kit tools and lock the binding. Restart Deep Rulith/its Worker after installing.
+   pin only the general kit's `eng.*` tools and lock the binding. Leave `web.fetch@1` and `web.search@1`
+   unpinned: Deep Rulith uses the host's native read-only `web_fetch`/`web_search` (D-1015c).
+   Restart Deep Rulith/its Worker after installing.
 
-The launcher refreshes each paired Agent with an existing kit home before starting dsh and the manager.
-The Runtime installer replaces the old adapters in `adapters/engineering-work/` and merges the twenty
+Before starting dsh and the manager, the launcher refreshes the general kit for its own Agent (`agentName` in the
+settings; every paired Agent with an existing kit home when no `agentName` is set). When a manager already listens on
+`managerPort`, another launcher shares this manager home and its Workers are running, so the refresh is skipped for
+that start. The Runtime installer replaces the old adapters in `adapters/engineering-work/` and merges the twenty
 kit tools into that Agent's manifest, preserving other tools and setting the Worker timeout from
-`settings.json` (including general web limits). Initial pairing and Worker enablement remain in Console.
+`settings.json` (including general web limits); it writes `local.json` and the manifest by temp file + rename.
+Initial pairing and Worker enablement remain in Console.
+
+Because the installer runs at every start, owner edits to what it owns are undone: in the Agent's `local.json` Worker
+environment `RULITH_WORKSPACE_TOOLS` is reset to `read` and `RULITH_WORKER_RUN_TIMEOUT_SECONDS` is recomputed from
+`settings.json`, and in its Worker tool manifest every `eng.*` tool that is not in the kit is removed (non-`eng.*` tools
+stay). Change limits in the kit home's `settings.json` instead.
 
 | Launcher environment | Default | Purpose |
 | --- | --- | --- |
 | `RULITH_RUNTIME_DIR` | Installed `rulith` package | Local Runtime checkout used for `kit install general`; set to `D:/Work/rulith-runtime-kit` until the general-kit Runtime is published. This selects the kit installer; the manager still uses the configured `runtimeEntry`. |
+
+| Launcher setting | Default | Purpose |
+| --- | --- | --- |
+| `agentName` | none | The Agent this launcher uses; the kit refresh at start covers only this Agent. |
+| `consoleUrl` | none (sign-in uses `https://console.rulith.ai`) | Console address (no secret), also used for this computer's sign-in. When set, a goal awaiting acceptance in the Rulith panel opens the Agent's cases in Console (`<origin>/console/#/cases?agentId=…`), where the person signs the criteria; without it the panel row offers only the local workbench and says so. |
 
 ## Tests
 

@@ -414,6 +414,6 @@ These fixed messages may appear as dsh tool errors: `tool refused`, `MCP connect
 
 ## Research ledger (Capability `research_ledger_2` 0.4.0, `rulith/v4`)
 
-The package stays installed; its words are no longer taught in the generic prompt (D-1015a decision 3). This section inventories the package.
+The package stays installed; its words are no longer taught in the generic prompt (D-1015a decision 4). This section inventories the package.
 
 Words the model may assert: `research.ledger.hypothesis(id,claim,goal)`, `research.ledger.datum(name,value,unit,source,goal)`, `research.ledger.dropped(hypothesis,reason)`, `research.ledger.cites(goal,from_goal)`. Words it derives with its own rules: `research.ledger.supported(hypothesis)`, `research.ledger.refuted(hypothesis)`. Words owned by the package and shown with the top-level goal: `research.ledger.item(goal,hypothesis,claim,state)` (state open, supported, refuted or dropped), `research.ledger.goal_datum(goal,name,value,unit,source)`, `research.ledger.goal_open(goal)`, `research.ledger.is_dropped(hypothesis)`. Rule labels are the eight sentences in `research-ledger/method.txt`.
