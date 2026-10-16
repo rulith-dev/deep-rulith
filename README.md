@@ -79,7 +79,7 @@ stay). Change limits in the kit home's `settings.json` instead.
 
 | Launcher environment | Default | Purpose |
 | --- | --- | --- |
-| `RULITH_RUNTIME_DIR` | Installed `rulith` package | Local Runtime checkout used for `kit install general`; set to `D:/Work/rulith-runtime-kit` until the general-kit Runtime is published. This selects the kit installer; the manager still uses the configured `runtimeEntry`. |
+| `RULITH_RUNTIME_DIR` | Installed `rulith` package | Local Runtime checkout used for `kit install general` instead of the installed `rulith` (0.17.0 and later ship `kits/general`); normally unset. This selects the kit installer; the manager still uses the configured `runtimeEntry`. |
 
 | Launcher setting | Default | Purpose |
 | --- | --- | --- |
