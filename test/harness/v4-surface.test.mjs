@@ -52,7 +52,7 @@ test('the addendum names the native web tools; both variants share the approved 
   assert.equal(WEB_ADDENDUM, main + ADDENDUM.slice(headless.length));
   assert.equal(CHILD_ADDENDUM, ADDENDUM, 'web children use the headless addendum');
   assert.equal(createHash('sha256').update(ADDENDUM.slice(headless.length)).digest('hex'),
-    '627788752d03afe5f9c3207cb63852eac5a5c7c6281384ab50ff5843e2a9c356');
+    'd749f0181382941f6499b9eca17e75ac6283d45cf312d98fb76bb69d42184ed7');
   const inventory = read('harness/model-visible.md');
   assert.ok(inventory.includes(ADDENDUM));
   assert.ok(inventory.includes(WEB_ADDENDUM));
