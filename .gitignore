@@ -3,3 +3,6 @@ node_modules/
 *.log
 deep-rulith.json
 deep-rulith-p*.json
+
+# Settings backups made by hand carry credentials like the settings themselves.
+deep-rulith*.json.*

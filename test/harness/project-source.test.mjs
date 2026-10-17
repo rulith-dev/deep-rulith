@@ -265,3 +265,43 @@ test('the Console goal link comes only from a configured http(s) consoleUrl and 
   for (const [url, agent] of [[undefined, 'a'], ['', 'a'], ['https://rulith.ai', ''], ['not a url', 'a'], ['javascript:alert(1)', 'a']])
     assert.equal(consoleGoalsUrl(url, agent), '');
 });
+
+test('the composer tool row carries this conversation\'s exploration mode and review controls, read for that session only', async () => {
+  let plugin, controls, injectControls;
+  const requests = [], effects = [];
+  // Hook state by call order, as React keeps it: a setter's value is what the next render reads.
+  const cells = []; let cursor = 0;
+  const React = {
+    createElement: (tag, props, ...children) => ({ tag, props, children: children.flat(Infinity).filter(Boolean) }),
+    useState: (initial) => { const i = cursor++; if (!(i in cells)) cells[i] = initial;
+      return [cells[i], (next) => { cells[i] = typeof next === 'function' ? next(cells[i]) : next; }]; },
+    useCallback: (fn) => fn, useEffect: (fn) => effects.push(fn),
+    useSyncExternalStore: (subscribe, snapshot) => { subscribe(() => {}); return snapshot(); },
+  };
+  const reply = { ok: true, found: true, reviewer: 'conn-1', connections: [{ connectionId: 'conn-1', name: 'Workspace' }],
+    conversation: { boardId: 'b', postCallReview: true, explorationModes: { 'conn-1': 'strict' } } };
+  vm.runInNewContext(fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'), {
+    window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } } }, setTimeout() {},
+    setInterval() { return 1; }, clearInterval() {},
+    fetch: async (url) => { requests.push(url); return { json: async () => reply }; },
+  });
+  plugin.apply({ effect() {}, inject() {}, sidebarRight: { mounted: { subscribe() { return () => {}; }, getSnapshot: () => undefined } },
+    slots: { inject(_name, fn) { if (fn.constructor.name !== 'GeneratorFunction') fn(); },
+      register(opts, component) { if (opts.name === 'conversation.input.left') { controls = component; injectControls = opts.inject; } } } });
+  assert.ok(controls, 'the plugin registers a composer-row control');
+  assert.equal(injectControls('session-9').sessionId, 'session-9', 'a session-scoped slot receives the session id positionally');
+  // First render: nothing is known yet, so nothing is drawn; the poll for THIS session starts.
+  cursor = 0; assert.equal(controls({ sessionId: 'session-9' }), null);
+  for (const fn of effects.splice(0)) await fn();
+  await new Promise((resolve) => setImmediate(resolve)); // the poll's fetch settles and its setter runs
+  assert.deepEqual(requests, ['/rulith/api/conversation?session=session-9']);
+  // With the reply in state, the row shows the mode chip and the review chip for this conversation.
+  const flatten = (node, out = []) => { if (!node || typeof node !== 'object') return out; out.push(node); for (const child of node.children || []) flatten(child, out); return out; };
+  cursor = 0; const rendered = flatten(controls({ sessionId: 'session-9' }));
+  const text = (node) => flatten(node).filter((n) => typeof n === 'string').join('');
+  const strings = rendered.flatMap((n) => n.children || []).filter((c) => typeof c === 'string');
+  assert.ok(strings.some((t) => t.includes('探索：严格')), 'the exploration chip names this conversation\'s current tier');
+  assert.ok(strings.some((t) => t.includes('审查：开')), 'the review chip shows this conversation\'s switch');
+  assert.ok(rendered.some((n) => n.props && n.props['data-rulith-composer'] === 'session-9'));
+  void text;
+});

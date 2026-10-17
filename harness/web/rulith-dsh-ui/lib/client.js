@@ -40,6 +40,15 @@ window.__ModuleLoader__.load({
       return [data, refresh, setData];
     }
     const dot = (color) => h("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 4, background: color, flex: "none" } });
+    // Exploration tiers, narrow to wide (TOOL-08b/08c), and the Console's approved confirmation texts for widening.
+    const MODE_ORDER = ["strict", "derived", "non_strict"];
+    const MODE_WORDS = { strict: "严格", derived: "推导", non_strict: "非严格" };
+    const WIDEN_TEXT = {
+      non_strict: { title: "Switch to non-strict exploration mode?", accept: "Switch to non-strict", cancel: "Keep strict",
+        body: "Write and run actions of this environment's tools will accept inputs the model supplies, even when no trusted fact on the Board backs them. Each such call is marked \"Inputs not grounded\". Calls that need your decision never run without it, writes stay inside the locations you authorized, and tools you have not locked stay unavailable. You can switch back at any time." },
+      derived: { title: "Switch to derived exploration mode?", accept: "Switch to derived", cancel: "Keep strict",
+        body: "The model will be able to write and run in this environment's workspace whenever it can derive, from facts and rules it writes on the Board, a warrant for that action and its key inputs. Those facts do not have to be trusted evidence. Calls that need your decision never run without it, and writes stay inside the local workspace." },
+    };
     const selectedAgent = (s) => (s && s.agents || []).find((a) => a.name === s.selected);
     function health(s) {
       if (!s || !s.ok || !s.signedIn) return { color: GREY, text: s && s.ok === false ? "Rulith 未连接" : "未登录 Rulith" };
@@ -264,6 +273,90 @@ window.__ModuleLoader__.load({
         block("本机执行（Worker）", project && project.workspace === workspace && project.project ? project.project.name : "", workerBody));
     }
 
+    // ACC-CONV-05/06, the owner's 10-15 direction ("composer selectors next to model and effort"): this conversation's
+    // exploration mode and post-call review switch live in the composer tool row (dsh slot conversation.input.left),
+    // next to dsh's own permission and model controls. The browser only sees what the launcher's conversationView
+    // picks out; the switch itself travels manager -> device grant -> Gateway (PSC 0.2.16 ③, 0.2.20).
+    function useConversationSettings(sessionId) {
+      const [settings, refresh] = usePoll("conversation?session=" + encodeURIComponent(sessionId), 6000);
+      const [note, setNote] = useState("");
+      const applyMode = async (connectionId, mode) => {
+        setNote("");
+        try {
+          const reply = await api("conversation/exploration-mode", { session: sessionId, connectionId, mode });
+          if (!reply.ok) setNote(reply.teaching || "没有切换");
+          else if (reply.state !== "complete") setNote("已受理，等待 Kernel 确认" + (reply.teaching ? "：" + reply.teaching : ""));
+          else if (reply.result && reply.result.accepted === false) setNote(reply.result.teaching || "Core 拒绝了这次切换");
+        } catch (error) { setNote(String(error)); }
+        refresh();
+      };
+      const applyReview = async (enabled) => {
+        setNote("");
+        try {
+          const reply = await api("conversation/review", { session: sessionId, enabled });
+          if (!reply.ok) setNote(reply.teaching || "没有切换");
+        } catch (error) { setNote(String(error)); }
+        refresh();
+      };
+      return { settings, refresh, note, setNote, applyMode, applyReview };
+    }
+    const chip = { display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 6, border: "1px solid rgba(127,127,127,.35)",
+      background: "transparent", color: "inherit", cursor: "pointer", font: "inherit", fontSize: 12, lineHeight: "18px", whiteSpace: "nowrap" };
+    const menu = { position: "absolute", bottom: "calc(100% + 6px)", left: 0, minWidth: 220, maxWidth: 360, padding: 6, borderRadius: 8, zIndex: 20,
+      background: "var(--dsh-color-surface, #1e1e1e)", border: "1px solid rgba(127,127,127,.35)", boxShadow: "0 6px 24px rgba(0,0,0,.35)", fontSize: 12 };
+    const item = { display: "block", width: "100%", textAlign: "left", padding: "5px 8px", borderRadius: 6, border: "none", background: "transparent",
+      color: "inherit", cursor: "pointer", font: "inherit", fontSize: 12 };
+    function RulithComposerControls({ sessionId }) {
+      const { settings, note, setNote, applyMode, applyReview } = useConversationSettings(sessionId);
+      const [open, setOpen] = useState(null);           // null | "mode:<connectionId>" | "review"
+      const [confirming, setConfirming] = useState(null); // { connectionId, mode } awaiting the approved confirmation
+      useEffect(() => { setOpen(null); setConfirming(null); setNote(""); }, [sessionId]);
+      // Nothing to show until this conversation has a Board (its first Rulith call) and the launcher can read it.
+      if (!settings || !settings.ok || !settings.found || !settings.conversation) return null;
+      const conversation = settings.conversation;
+      const modes = conversation.explorationModes || null;
+      const connections = Array.isArray(settings.connections) ? settings.connections : [];
+      const close = () => { setOpen(null); setConfirming(null); };
+      const chooseMode = (connectionId, currentMode, next) => {
+        if (MODE_ORDER.indexOf(next) > MODE_ORDER.indexOf(currentMode)) { setConfirming({ connectionId, mode: next }); return; }
+        close(); applyMode(connectionId, next);
+      };
+      const controls = connections.map((connection) => {
+        const currentMode = modes ? modes[connection.connectionId] : undefined;
+        const key = "mode:" + connection.connectionId;
+        const label = (connections.length > 1 ? (connection.name || connection.connectionId) + " · " : "") + "探索：" + (currentMode ? MODE_WORDS[currentMode] || currentMode : "读不准");
+        return h("span", { key, style: { position: "relative", display: "inline-flex" }, "data-rulith-mode": connection.connectionId },
+          h("button", { type: "button", style: chip, "aria-haspopup": "menu", "aria-expanded": open === key, title: "本会话的探索模式（只改这个会话）",
+            onClick: () => setOpen(open === key ? null : key) }, label, h("span", { style: { opacity: 0.6 } }, "▾")),
+          open === key ? h("div", { role: "menu", style: menu },
+            confirming && confirming.connectionId === connection.connectionId
+              ? h("div", { role: "dialog" },
+                h("div", { style: { fontWeight: 600, marginBottom: 4 } }, WIDEN_TEXT[confirming.mode].title),
+                h("div", { style: { opacity: 0.8, marginBottom: 8 } }, WIDEN_TEXT[confirming.mode].body),
+                h("div", { style: { display: "flex", gap: 6 } },
+                  h("button", { type: "button", style: { ...chip }, onClick: () => { const c = confirming; close(); applyMode(c.connectionId, c.mode); } }, WIDEN_TEXT[confirming.mode].accept),
+                  h("button", { type: "button", style: { ...chip }, onClick: () => setConfirming(null) }, WIDEN_TEXT[confirming.mode].cancel)))
+              : h("div", null,
+                h("div", { style: { ...small, padding: "2px 8px 4px" } }, "本会话的探索模式 · 收窄立即生效，放宽先确认"),
+                MODE_ORDER.map((mode) => h("button", { key: mode, type: "button", role: "menuitemradio", "aria-checked": mode === currentMode,
+                  style: { ...item, fontWeight: mode === currentMode ? 600 : 400 }, disabled: !currentMode || mode === currentMode,
+                  onClick: () => chooseMode(connection.connectionId, currentMode, mode) }, (mode === currentMode ? "● " : "○ ") + MODE_WORDS[mode] + "探索模式")))) : null);
+      });
+      const reviewOn = conversation.postCallReview === true;
+      const review = h("span", { style: { position: "relative", display: "inline-flex" }, "data-rulith-review": reviewOn ? "on" : "off" },
+        h("button", { type: "button", style: chip, "aria-haspopup": "menu", "aria-expanded": open === "review", title: "本会话的事后审查（只改这个会话）",
+          onClick: () => setOpen(open === "review" ? null : "review") }, "审查：" + (reviewOn ? "开" : "关"), h("span", { style: { opacity: 0.6 } }, "▾")),
+        open === "review" ? h("div", { role: "menu", style: menu },
+          h("div", { style: { ...small, padding: "2px 8px 4px" } }, settings.reviewer ? "本会话写入调用的事后审查，自下一次调用起" : "这个 Agent 没有指定审查员：开着也不审"),
+          h("button", { type: "button", role: "menuitemradio", "aria-checked": reviewOn, style: { ...item, fontWeight: reviewOn ? 600 : 400 }, disabled: reviewOn,
+            onClick: () => { close(); applyReview(true); } }, (reviewOn ? "● " : "○ ") + "开：写入调用送审查员"),
+          h("button", { type: "button", role: "menuitemradio", "aria-checked": !reviewOn, style: { ...item, fontWeight: reviewOn ? 400 : 600 }, disabled: !reviewOn,
+            onClick: () => { close(); applyReview(false); } }, (reviewOn ? "○ " : "● ") + "关：本会话不审（推导档下不能关）")) : null);
+      return h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 4 }, "data-rulith-composer": sessionId },
+        controls, review,
+        note ? h("span", { role: "alert", style: { ...small, color: AMBER, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }, title: note }, note) : null);
+    }
+
     const RulithArtwork = () => h("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
       borderRadius: 7, background: "#2ea36b", color: "#fff", fontWeight: 800, fontSize: 16 } }, "R");
     function apply(ctx) {
@@ -295,6 +388,9 @@ window.__ModuleLoader__.load({
       });
       const openBoard = () => { try { ctx.sidebarRight.openTab(TAB_KIND, {}); } catch (error) { console.warn("Deep Rulith: could not open the Rulith tab", error); } };
       ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({ name: "sidebar.footer.action", id: "rulith-account", inject: () => ({ openBoard }) }, RulithAccount));
+      // Session-scoped slot: dsh hands the registrant the session id positionally.
+      ctx.slots.inject("conversation.input.left", () => ctx.slots.register({ name: "conversation.input.left", id: "rulith-conversation",
+        inject: (sessionId) => ({ sessionId }) }, RulithComposerControls));
       ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({ name: "sidebar.right.pane.tab", key: TAB_ID,
         inject: () => ({ mountedSession: ctx.sidebarRight.mounted }) }, RulithColumn));
       ctx.slots.inject("sidebar.right.pane.tab.title", () => ctx.slots.register({ name: "sidebar.right.pane.tab.title", key: TAB_ID, inject: () => ({}) }, () => h("span", null, "Rulith")));

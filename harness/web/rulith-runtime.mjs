@@ -8,6 +8,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installOutgoingTrim } from './outgoing-trim.mjs';
@@ -40,6 +41,15 @@ export function cachedBoard(current, status, session) {
   }
   const channel = current.channel ?? current.boards?.holders.get(undefined)?.channel;
   return { available: true, agentName: current.agentName, ...channel?.latestBoard };
+}
+
+/** What the panel may see of a conversation-settings reply: the conversation's row and the control's outcome, nothing of
+ * the manager's own state (the manager answers every operation with its full state appended). */
+export function conversationView(reply) {
+  const out = {};
+  for (const field of ['found', 'conversation', 'connections', 'reviewer', 'state', 'result', 'teaching', 'requestId', 'boardId',
+    'postCallReview', 'explorationModes']) if (reply?.[field] !== undefined) out[field] = reply[field];
+  return out;
 }
 
 const listening = (port) => new Promise((resolve) => {
@@ -382,6 +392,18 @@ export async function apply(ctx, config = {}) {
     const row = (all.agents ?? []).find((entry) => entry.agentId === agent.agentId);
     return { proposed: true, url: row?.console?.runtime ?? '' };
   };
+  // The Agent and the conversation key a session's settings belong to. Only observed mappings: a session that never used
+  // Rulith has no Board yet, and asking must not open a connection (same rule as the Board panel).
+  const pendingControls = new Map();
+  const conversationTarget = (session) => {
+    const agent = selectedAgent(home, chosenName());
+    if (!agent) throw new Error('Choose an Agent first');
+    if (!current?.boards?.enabled) throw new Error('Conversation Boards are off for this launcher; set the exploration mode and reviewer for the Agent in Console');
+    if (typeof session !== 'string' || !session) throw new Error('Invalid session id.');
+    const key = current.boards.sessions.get(session);
+    if (key === undefined) throw new Error('This conversation has not used Rulith yet');
+    return { agentId: agent.agentId, conversationKey: key };
+  };
   const routes = {
     'POST /rulith/api/folder': proposeFolder,
     'GET /rulith/api/health': health,
@@ -418,6 +440,25 @@ export async function apply(ctx, config = {}) {
       return summary(await manager('/manager/state'));
     },
     'GET /rulith/api/board': (query) => cachedBoard(current, status, query.session),
+    // ACC-CONV-05/06 (PSC 0.2.16 ③): this conversation's own exploration mode and post-call review switch, issued by the
+    // signed-in owner's client through the manager's device grant. The conversation names itself by its key; nothing else
+    // of the manager's state reaches the browser (conversationView picks the fields).
+    'GET /rulith/api/conversation': async (query) => conversationView(await manager('/manager/conversations/state', conversationTarget(query.session))),
+    'POST /rulith/api/conversation/exploration-mode': async (body) => {
+      // A control's request id is its identity: a reply lost in transit leaves the control pending on the Gateway, and only
+      // the same id resumes it (a new one is refused as control_pending). Keep the id of an unconfirmed switch and resend it
+      // for the same conversation, Connection and mode until the Gateway answers complete.
+      const target = conversationTarget(body.session);
+      const connectionId = String(body.connectionId ?? ''), mode = String(body.mode ?? '');
+      const pendingKey = `${target.conversationKey}|${connectionId}|${mode}`;
+      const requestId = pendingControls.get(pendingKey) ?? randomUUID();
+      pendingControls.set(pendingKey, requestId);
+      const view = conversationView(await manager('/manager/conversations/exploration-mode', { ...target, connectionId, mode, requestId }));
+      if (view.state === 'complete') pendingControls.delete(pendingKey);
+      return view;
+    },
+    'POST /rulith/api/conversation/review': async (body) => conversationView(await manager('/manager/conversations/review',
+      { ...conversationTarget(body.session), enabled: body.enabled === true })),
     // The workbench address carries the manager key: handed out only on this guarded same-origin request.
     'POST /rulith/api/workbench': async () => ({ url: `http://127.0.0.1:${port}/?k=${key}` }),
   };
