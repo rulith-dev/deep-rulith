@@ -172,11 +172,11 @@ window.__ModuleLoader__.load({
     }
     function RulithSessionColumn({ sessionId, useSessions }) {
       const workspace = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
-      const [project, refreshProject] = usePoll("project?workspace=" + encodeURIComponent(workspace || ""), 6000);
+      const [project, refreshProject] = usePoll("project?workspace=" + encodeURIComponent(workspace || "") + "&session=" + encodeURIComponent(sessionId), 6000);
       // Refresh the host's local snapshot; this route never sends a Board Get.
       const [data, refresh] = usePoll("board?session=" + encodeURIComponent(sessionId), 6000);
-      const [worker, refreshWorker] = usePoll("worker", 6000);
-      const [health, refreshHealth] = usePoll("health", 60000);
+      const [worker, refreshWorker] = usePoll("worker?session=" + encodeURIComponent(sessionId), 6000);
+      const [health, refreshHealth] = usePoll("health?session=" + encodeURIComponent(sessionId), 60000);
       const [trace, setTrace] = useState(true);
       const [folder, setFolder] = useState("");
       const [folderNote, setFolderNote] = useState("");
@@ -222,7 +222,7 @@ window.__ModuleLoader__.load({
       const proposeFolder = async (source) => {
         setFolderNote("");
         try {
-          const reply = await api("folder", { source, path: folder });
+          const reply = await api("folder", { source, path: folder, session: sessionId });
           if (!reply.ok) { setFolderNote(reply.teaching || "没有提交成功"); return; }
           setFolderNote("已提交：在 Console 的 Runtime 页确认一次，就会绑定这个文件夹。");
           if (reply.url) window.open(reply.url, "_blank", "noopener");
@@ -359,6 +359,197 @@ window.__ModuleLoader__.load({
         note ? h("span", { role: "alert", style: { ...small, color: AMBER, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }, title: note }, note) : null);
     }
 
+
+    // ---- Sidebar: Agent -> directory -> conversation (owner 2026-10-17). Registered at a lower priority than dsh's own
+    // workspace browser, which shadows its view; dsh's navigation service (uiWorkspace) still opens, starts and archives
+    // conversations, and dsh's session and workspace stores are read as they are. Directories are the Agent's file
+    // Sources on this computer (or its own working directory); a conversation belongs to the Agent recorded for it.
+    const COLLAPSE_KEY = "deep-rulith.tree.collapsed";
+    const loadCollapsed = () => { try { return JSON.parse(window.localStorage.getItem(COLLAPSE_KEY) || "{}") || {}; } catch { return {}; } };
+    const saveCollapsed = (value) => { try { window.localStorage.setItem(COLLAPSE_KEY, JSON.stringify(value)); } catch {} };
+    const samePath = (p) => String(p || "").replace(/\//g, "\\").replace(/[\\]+$/, "").toLowerCase();
+    const baseName = (p) => String(p || "").split(/[\\/]/).filter(Boolean).pop() || String(p || "");
+    const agoText = (ms) => {
+      if (!Number.isFinite(ms)) return "";
+      const m = Math.round((Date.now() - ms) / 60000);
+      return m < 1 ? "刚刚" : m < 60 ? m + " 分" : m < 1440 ? Math.round(m / 60) + " 时" : Math.round(m / 1440) + " 天";
+    };
+    const RECENT_MS = 3 * 24 * 3600 * 1000;
+    const SHOWN = 5;
+    const useStore = (store) => React.useSyncExternalStore((notify) => store.subscribe(notify), () => store.getSnapshot());
+    const tiny = { padding: "0 6px", borderRadius: 5, border: "none", background: "transparent", color: "inherit", cursor: "pointer", font: "inherit", fontSize: 13, lineHeight: "18px", opacity: 0.6 };
+    const pick = (value, ...keys) => { for (const key of keys) if (value && value[key] !== undefined) return value[key]; return value; };
+
+    /** Group conversations under Agents and directories. Pure: exported for the harness tests. */
+    function buildTree({ tree, list, workspaces, current, filter, collapsed }) {
+      const agents = tree && Array.isArray(tree.agents) ? tree.agents : [];
+      const assignments = (tree && tree.assignments) || {};
+      const archived = new Set((workspaces && workspaces.archivedSessionIds) || []);
+      const pinned = new Set((workspaces && workspaces.pinnedSessionIds) || []);
+      const owners = new Map();
+      // A shared directory belongs to the default Agent when it is one of its owners (same rule as the launcher).
+      const byDefault = [...agents].sort((x, y) => (y.agentId === (tree && tree.defaultAgentId)) - (x.agentId === (tree && tree.defaultAgentId)));
+      for (const a of byDefault) for (const d of a.directories || []) if (!owners.has(samePath(d.path))) owners.set(samePath(d.path), a.agentId);
+      const groups = new Map(agents.map((a) => [a.agentId, { agent: a, dirs: new Map((a.directories || []).map((d) => [samePath(d.path), { dir: d, sessions: [] }])) }]));
+      const others = [];
+      const q = String(filter || "").trim().toLowerCase();
+      for (const id of (list && list.ids) || []) {
+        const s = list.byId[id];
+        if (!s || s.origin === "subagent" || archived.has(s.id) || (s.blank && s.id !== current)) continue;
+        // Recorded Agent, else the owner of its directory. A conversation with neither (from before the sidebar, or of an
+        // Agent since deleted) is not given to anyone: it waits under "未归属的会话".
+        const agentId = assignments[s.id] || owners.get(samePath(s.cwd));
+        const group = groups.get(agentId);
+        if (!group) { others.push(s); continue; }
+        const key = samePath(s.cwd);
+        if (!group.dirs.has(key)) group.dirs.set(key, { dir: { path: s.cwd || "", label: baseName(s.cwd) || "其他目录", source: null, extra: true }, sessions: [] });
+        group.dirs.get(key).sessions.push(s);
+      }
+      const order = (a, b) => (pinned.has(b.id) - pinned.has(a.id)) || (b.running - a.running) || ((b.updatedAt || 0) - (a.updatedAt || 0));
+      const matches = (s, agent, dir) => !q || [s.title, agent.name, dir.label].some((text) => String(text || "").toLowerCase().includes(q));
+      const out = [];
+      for (const group of groups.values()) {
+        const a = group.agent;
+        const dirs = [];
+        let latest = 0, running = false, count = 0, hasCurrent = false;
+        for (const entry of group.dirs.values()) {
+          const sessions = entry.sessions.filter((s) => matches(s, a, entry.dir)).sort(order);
+          for (const s of sessions) { latest = Math.max(latest, s.updatedAt || 0); running = running || !!s.running; hasCurrent = hasCurrent || s.id === current; }
+          count += sessions.length;
+          if (q && !sessions.length && !String(a.name).toLowerCase().includes(q)) continue;
+          if (entry.dir.extra && !sessions.length) continue;
+          dirs.push({ ...entry.dir, key: a.agentId + "|" + samePath(entry.dir.path), sessions });
+        }
+        if (q && !count && !String(a.name).toLowerCase().includes(q)) continue;
+        const stored = collapsed ? collapsed[a.agentId] : undefined;
+        const open = q ? true : stored !== undefined ? !stored : !!(hasCurrent || running || (latest && Date.now() - latest < RECENT_MS));
+        out.push({ agent: a, dirs, latest, running, count, hasCurrent, open, isDefault: tree && tree.defaultAgentId === a.agentId });
+      }
+      // Active first: a running conversation, then the most recent activity; Agents not set up here last.
+      out.sort((x, y) => (y.agent.attached - x.agent.attached) || (y.running - x.running) || (y.latest - x.latest)
+        || String(x.agent.name).localeCompare(String(y.agent.name)));
+      // Unowned conversations by directory; a directory name shared by several is shown with its parent.
+      const lastTwo = (p) => String(p || "").split(/[\/]/).filter(Boolean).slice(-2).join("/");
+      const otherDirs = new Map();
+      for (const s of others.filter((s) => !q || String(s.title || "").toLowerCase().includes(q)).sort(order)) {
+        const key = samePath(s.cwd);
+        if (!otherDirs.has(key)) otherDirs.set(key, { key: "others|" + key, path: s.cwd || "", label: baseName(s.cwd) || "其他目录", sessions: [] });
+        otherDirs.get(key).sessions.push(s);
+      }
+      const names = new Map();
+      for (const d of otherDirs.values()) names.set(d.label, (names.get(d.label) || 0) + 1);
+      for (const d of otherDirs.values()) if (names.get(d.label) > 1) d.label = lastTwo(d.path);
+      const otherList = [...otherDirs.values()];
+      const othersOpen = q ? otherList.length > 0 : collapsed && collapsed["others"] === false;
+      return { agents: out, others: { dirs: otherList, count: otherList.reduce((n, d) => n + d.sessions.length, 0), open: !!othersOpen } };
+    }
+
+    function makeRulithTree(services) {
+      return function RulithTree({ wide, expandSidebar }) {
+        const list = useStore(services.sessions.list);
+        const workspaces = useStore(services.workspaces.list);
+        const selection = useStore(services.ui.selection);
+        const [tree, refreshTree] = usePoll("tree", 15000);
+        const [filter, setFilter] = useState("");
+        const [collapsed, setCollapsed] = useState(loadCollapsed);
+        const [more, setMore] = useState({});
+        const [busy, setBusy] = useState("");
+        const [note, setNote] = useState("");
+        if (!wide) return h("button", { type: "button", title: "展开智能体列表", onClick: expandSidebar,
+          style: { ...button, display: "block", margin: "8px auto" } }, "☰");
+        const current = selection && selection.sessionId;
+        const ready = tree && tree.ok;
+        const view = buildTree({ tree: ready ? tree : null, list, workspaces, current, filter, collapsed });
+        const toggle = (key, open) => { const next = { ...collapsed, [key]: open }; setCollapsed(next); saveCollapsed(next); };
+        const open = (id) => { try { services.ui.openSession(id); } catch (error) { setNote(String(error && error.message || error)); } };
+        const archive = (id) => Promise.resolve(services.ui.archiveSession(id)).catch((error) => setNote(String(error && error.message || error)));
+        const newSession = async (agent, dir) => {
+          if (busy) return;
+          setBusy(agent.agentId); setNote("");
+          try {
+            let ws = ((services.workspaces.list.getSnapshot() || {}).items || []).find((item) => samePath(item.path) === samePath(dir.path));
+            if (!ws) { const made = await services.workspaces.create({ path: dir.path }); ws = pick(pick(made, "value"), "workspace"); }
+            const created = await services.sessions.create({ workspaceId: ws.workspaceId });
+            const id = typeof created === "string" ? created : pick(pick(created, "value"), "sessionId");
+            const reply = await api("sessions/assign", { session: id, agentId: agent.agentId });
+            if (!reply.ok) setNote(reply.teaching || "没有记下这个会话的智能体");
+            open(id);
+            refreshTree();
+          } catch (error) { setNote("新会话没有建成：" + String(error && error.message || error)); }
+          finally { setBusy(""); }
+        };
+        const setUp = async (agent) => {
+          setBusy(agent.agentId); setNote("");
+          try { const reply = await api("select", { agentId: agent.agentId, newConnection: true }); if (!reply.ok) setNote(reply.teaching || "没有设置成功"); refreshTree(); }
+          finally { setBusy(""); }
+        };
+        const firstDir = (entry) => entry.dirs.find((d) => !d.extra) || entry.dirs[0];
+        const startHere = () => {
+          const own = view.agents.find((entry) => entry.hasCurrent) || view.agents.find((entry) => entry.isDefault) || view.agents[0];
+          if (!own || !own.agent.attached) return;
+          const s = current && list.byId[current];
+          const dir = (s && own.dirs.find((d) => samePath(d.path) === samePath(s.cwd))) || firstDir(own);
+          if (dir) newSession(own.agent, dir);
+        };
+        const sessionRow = (s) => h("div", { key: s.id, role: "button", tabIndex: 0, "data-rulith-session": s.id,
+            onClick: () => open(s.id), onKeyDown: (event) => { if (event.key === "Enter") open(s.id); },
+            style: { display: "flex", alignItems: "center", gap: 6, padding: "3px 6px 3px 34px", borderRadius: 6, cursor: "pointer", fontSize: 13,
+              background: s.id === current ? "rgba(127,127,127,.20)" : "transparent" } },
+          s.running ? dot(GREEN) : h("span", { style: { width: 8, flex: "none" } }),
+          h("span", { title: s.title || "", style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+            s.blank ? "新会话" : (s.title && s.title.trim()) || "未命名会话"),
+          h("span", { style: { ...small, flex: "none" } }, agoText(s.updatedAt)),
+          h("button", { type: "button", title: "归档这个会话", style: tiny, onClick: (event) => { event.stopPropagation(); archive(s.id); } }, "×"));
+        const dirBlock = (entry, d) => {
+          const key = "d:" + d.key;
+          const shut = collapsed[key] === true && !filter;
+          const showAll = !!more[d.key] || !!filter;
+          const shown = showAll ? d.sessions : d.sessions.slice(0, SHOWN);
+          return h("div", { key: d.key, "data-rulith-directory": d.path },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 4, padding: "2px 6px 2px 18px", fontSize: 12.5, opacity: 0.9 } },
+              h("button", { type: "button", style: { ...tiny, padding: 0, width: 14 }, onClick: () => toggle(key, !shut) }, shut ? "▸" : "▾"),
+              h("span", { title: d.path, style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                "📁 " + (d.label || baseName(d.path)) + (d.source === null && !d.extra ? "（未绑定目录）" : "")),
+              h("span", { style: small }, d.sessions.length || ""),
+              entry.agent.attached ? h("button", { type: "button", title: "在这个目录开新会话", disabled: !!busy, style: tiny,
+                onClick: () => newSession(entry.agent, d) }, "+") : null),
+            shut ? null : h("div", null, shown.map(sessionRow),
+              d.sessions.length > SHOWN && !filter ? h("button", { type: "button", style: { ...tiny, padding: "1px 34px", fontSize: 12 },
+                onClick: () => setMore({ ...more, [d.key]: !showAll }) }, showAll ? "收起" : "更多（" + (d.sessions.length - SHOWN) + "）") : null));
+        };
+        const agentBlock = (entry) => {
+          const a = entry.agent;
+          const online = a.worker && a.worker.state === "online";
+          return h("div", { key: a.agentId, "data-rulith-agent": a.agentId, style: { marginBottom: 4 } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", borderRadius: 6, fontSize: 13, fontWeight: 600 } },
+              h("button", { type: "button", style: { ...tiny, padding: 0, width: 14, opacity: 0.8 }, onClick: () => toggle(a.agentId, entry.open) }, entry.open ? "▾" : "▸"),
+              dot(!a.attached ? GREY : online ? GREEN : AMBER),
+              h("span", { title: a.name, style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, a.name),
+              entry.isDefault ? h("span", { style: { ...small, fontWeight: 400 } }, "默认") : null,
+              entry.count ? h("span", { style: { ...small, fontWeight: 400 } }, entry.count) : null,
+              !a.attached ? h("button", { type: "button", disabled: !!busy, style: { ...button, padding: "0 6px", fontSize: 11 }, onClick: () => setUp(a) }, "在本机设置")
+                : firstDir(entry) ? h("button", { type: "button", title: "在这个智能体下开新会话", disabled: !!busy, style: tiny, onClick: () => newSession(a, firstDir(entry)) }, "+") : null),
+            entry.open && a.attached ? h("div", null, entry.dirs.map((d) => dirBlock(entry, d))) : null);
+        };
+        return h("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, flex: 1, overflow: "auto", padding: "4px 6px" }, "data-rulith-tree": "" },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px" } },
+            h("span", { style: { ...section, margin: 0, flex: 1 } }, "智能体"),
+            h("button", { type: "button", title: "在当前智能体与目录下开新会话", disabled: !!busy || !ready, style: tiny, onClick: startHere }, "＋ 新会话")),
+          h("input", { value: filter, placeholder: "筛选智能体、目录或会话", onChange: (event) => setFilter(event.target.value),
+            style: { margin: "2px 6px 8px", padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(127,127,127,.35)", background: "transparent", color: "inherit", font: "inherit", fontSize: 12 } }),
+          !tree ? none("正在读取智能体…")
+            : !ready ? h("div", { style: { ...small, padding: "0 6px 8px" } }, tree.teaching || "读不到智能体：在左下角登录 Rulith。") : null,
+          view.agents.map(agentBlock),
+          view.others.count ? h("div", { style: { marginTop: 6 }, "data-rulith-unowned": "" },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", fontSize: 13, opacity: 0.8 } },
+              h("button", { type: "button", style: { ...tiny, padding: 0, width: 14 }, onClick: () => toggle("others", view.others.open) }, view.others.open ? "▾" : "▸"),
+              h("span", { style: { flex: 1 } }, "未归属的会话"),
+              h("span", { style: small }, view.others.count)),
+            view.others.open ? view.others.dirs.map((d) => dirBlock({ agent: { attached: false } }, d)) : null) : null,
+          note ? h("div", { role: "alert", style: { ...small, color: AMBER, padding: "4px 6px" } }, note) : null);
+      };
+    }
+
     const RulithArtwork = () => h("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
       borderRadius: 7, background: "#2ea36b", color: "#fff", fontWeight: 800, fontSize: 16 } }, "R");
     function apply(ctx) {
@@ -390,6 +581,11 @@ window.__ModuleLoader__.load({
       });
       const openBoard = () => { try { ctx.sidebarRight.openTab(TAB_KIND, {}); } catch (error) { console.warn("Deep Rulith: could not open the Rulith tab", error); } };
       ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({ name: "sidebar.footer.action", id: "rulith-account", inject: () => ({ openBoard }) }, RulithAccount));
+      // The Agent -> directory -> conversation browser, once dsh's navigation and stores are up.
+      ctx.inject(["uiWorkspace", "sessions", "workspaces"], (inner) => {
+        const RulithTree = makeRulithTree({ ui: inner.uiWorkspace, sessions: inner.sessions, workspaces: inner.workspaces });
+        inner.slots.inject("sidebar.workspaces", () => inner.slots.register({ name: "sidebar.workspaces", priority: -1 }, RulithTree));
+      });
       // Session-scoped slot: dsh hands the registrant the session id positionally.
       ctx.slots.inject("conversation.input.left", () => ctx.slots.register({ name: "conversation.input.left", id: "rulith-conversation",
         inject: (sessionId) => ({ sessionId }) }, RulithComposerControls));
@@ -403,6 +599,7 @@ window.__ModuleLoader__.load({
       }));
     }
     exports.apply = apply;
+    exports.buildTree = buildTree;
     exports.inject = ["slots", "sidebarRightTabs", "sidebarRight"];
     return module.exports;
   }

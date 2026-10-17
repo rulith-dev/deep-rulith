@@ -357,7 +357,7 @@ test('a conversation waiting to reconnect cannot block another; disposal cancels
   assert.equal(f.boards.size, 1);
 });
 
-async function runtimeFixture(t, enabled = true, initialAgents = []) {
+async function runtimeFixture(t, enabled = true, initialAgents = [], instances = null) {
   // All I/O is mocked: no manager, credentials, socket, status file or Gateway is accessed.
   const previousFlag = process.env.RULITH_DSH_CONVERSATION_BOARDS;
   process.env.RULITH_DSH_CONVERSATION_BOARDS = enabled ? '1' : '0';
@@ -374,10 +374,13 @@ async function runtimeFixture(t, enabled = true, initialAgents = []) {
   });
   t.mock.method(fs, 'readFileSync', (file) => {
     if (String(file).endsWith('fixture-key.txt')) return 'fixture-manager-key';
-    if (String(file).endsWith('registry.json')) return JSON.stringify({ instances: [
-      { id: 'instance', mode: 'local_agent', agentName: 'fixture', directory: 'fixture-instance' },
+    if (String(file).endsWith('registry.json')) return JSON.stringify({ instances: instances ?? [
+      { id: 'instance', mode: 'local_agent', agentId: 'fixture-agent', agentName: 'fixture', directory: 'fixture-instance' },
     ] });
-    if (String(file).endsWith('local.json')) return JSON.stringify({ agent: { env: { RULITH_TOKEN: 'fixture-token' } } });
+    if (String(file).endsWith('local.json')) {
+      const owner = (instances ?? []).find((row) => String(file).includes(row.directory));
+      return JSON.stringify({ agent: { env: { RULITH_TOKEN: owner ? `token-${owner.agentId}` : 'fixture-token' } } });
+    }
     throw new Error('fixture file absent');
   });
   t.mock.method(fs, 'writeFileSync', (_file, value) => statuses.push(JSON.parse(value)));
@@ -413,7 +416,16 @@ async function runtimeFixture(t, enabled = true, initialAgents = []) {
       { writeHead(code) { assert.equal(code, 200); }, end(body) { reply = JSON.parse(body); } });
     return reply;
   };
-  return { requests, statuses, definitions, emit, panel, tick: () => tick(), transport: (fn) => { transport = fn; } };
+  const post = async (route, body) => {
+    const req = new EventEmitter();
+    Object.assign(req, { method: 'POST', url: '/rulith/api/' + route, headers: { host: 'localhost', 'x-deep-rulith': '1' } });
+    let reply;
+    const done = server.handler(req, { writeHead() {}, end(text) { reply = JSON.parse(text); } });
+    queueMicrotask(() => { req.emit('data', JSON.stringify(body)); req.emit('end'); });
+    await done;
+    return reply;
+  };
+  return { requests, statuses, definitions, emit, panel, post, tick: () => tick(), transport: (fn) => { transport = fn; } };
 }
 
 test('runtime tick proactively recovers a failed conversation without another model call', async (t) => {
@@ -504,4 +516,31 @@ test('Board endpoint preserves the shared cached Board with the feature off, reg
   assert.deepEqual(await panel('?session='), shared);
   assert.equal(requests.length, before);
   assert.ok(requests.every((r) => r.headers['X-Rulith-Conversation'] === undefined));
+});
+
+test('every paired Agent is attached at once; tool calls go to the Agent the conversation belongs to, which then stays fixed', async (t) => {
+  const f = await runtimeFixture(t, true, [], [
+    { id: 'instance-a', mode: 'local_agent', agentId: 'agent-a', agentName: 'alpha', directory: 'dir-a' },
+    { id: 'instance-b', mode: 'local_agent', agentId: 'agent-b', agentName: 'beta', directory: 'dir-b' },
+    { id: 'instance-c', mode: 'local_agent', agentId: 'agent-c', agentName: 'gone', directory: 'dir-c', signedOutAt: '2026-10-17' },
+  ]);
+  assert.deepEqual(f.definitions.map((d) => d.name), TOOLS, 'the three tools are registered once for all Agents');
+  assert.deepEqual([...new Set(f.requests.map((r) => r.headers.authorization))].sort(), ['Bearer token-agent-a', 'Bearer token-agent-b'],
+    'both paired Agents were discovered; the signed-out instance was not');
+  const other = agent('other');
+  assert.deepEqual((await f.post('sessions/assign', { session: 'other', agentId: 'agent-b' })).agentId, 'agent-b');
+  f.emit('agent/created', { agent: main }); f.emit('agent/created', { agent: other });
+  const get = f.definitions.find((d) => d.name === 'Get');
+  const before = f.requests.length;
+  await get.execute({}, { agent: other }); await get.execute({}, { agent: main });
+  const calls = f.requests.slice(before).filter((r) => r.method === 'tools/call');
+  assert.deepEqual(calls.map((r) => [r.headers['X-Rulith-Conversation'], r.headers.authorization]),
+    [['dsh:other', 'Bearer token-agent-b'], ['dsh:parent', 'Bearer token-agent-a']],
+    'the assigned conversation uses beta; the unassigned one uses the default (first attached) Agent');
+  const moved = await f.post('sessions/assign', { session: 'parent', agentId: 'agent-b' });
+  assert.equal(moved.ok, false, 'a conversation that has a Board keeps its Agent');
+  assert.match(moved.teaching, /already works on another Agent/);
+  assert.equal((await f.post('sessions/assign', { session: 'x', agentId: 'agent-c' })).ok, false, 'an Agent not set up here cannot take a conversation');
+  assert.equal((await f.panel('?session=other')).agentName, 'beta', 'the panel reads the conversation\'s own Agent');
+  assert.equal(f.statuses.at(-1).liveConversations, 2);
 });

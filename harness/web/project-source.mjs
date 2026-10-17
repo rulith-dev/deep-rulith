@@ -75,7 +75,7 @@ export function installProjectContext(ctx, sourcesForConversation) {
     let line = '';
     try {
       if (!workspace) throw new Error('conversation workspace is unavailable');
-      const sources = await sourcesForConversation();
+      const sources = await sourcesForConversation(agent);
       line = projectLine(workspace, resolveProject(workspace, sources));
     } catch {
       // Fetch errors can contain addresses or credentials. The visible diagnosis deliberately contains neither.

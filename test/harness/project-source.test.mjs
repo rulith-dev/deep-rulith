@@ -329,3 +329,43 @@ test('a conversation that never called Rulith is addressed by the key of its ses
   assert.equal(connected.length, 1, 'an open Board is not reopened');
   boards.close();
 });
+
+test('the sidebar groups conversations Agent -> directory -> conversation, active Agents first, idle ones folded', () => {
+  let plugin;
+  const React = { createElement: () => null, useState: (v) => [v, () => {}], useCallback: (f) => f, useEffect() {}, useSyncExternalStore: (_s, g) => g() };
+  vm.runInNewContext(fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'), {
+    window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } }, localStorage: { getItem: () => null, setItem() {} } },
+    setTimeout() {}, setInterval() { return 1; }, clearInterval() {}, fetch: async () => ({ json: async () => ({}) }),
+  });
+  const now = Date.now();
+  const tree = { defaultAgentId: 'a', assignments: { s4: 'b' }, agents: [
+    { agentId: 'a', name: 'alpha', attached: true, directories: [{ path: 'D:\\Work\\game', label: 'game', source: 'game' }] },
+    { agentId: 'b', name: 'beta', attached: true, directories: [{ path: 'D:\\run\\agents\\beta', label: '工作台', source: null }] },
+    { agentId: 'c', name: 'gamma', attached: false, directories: [] },
+  ] };
+  const row = (id, cwd, updatedAt, extra = {}) => ({ id, cwd, updatedAt, running: false, blank: false, title: 'T' + id, ...extra });
+  const list = { ids: ['s1', 's2', 's3', 's4', 's5', 's6', 's7'], byId: {
+    s1: row('s1', 'd:/work/game/', now - 10 * 86400000),                 // alpha by directory (path compared loosely)
+    s2: row('s2', 'C:\\elsewhere', now - 20 * 86400000),                 // unassigned, unknown dir: unowned, folded
+    s3: row('s3', 'D:\\Work\\game', now - 1000, { running: false }),     // alpha
+    s4: row('s4', 'D:\\Work\\game', now - 2000, { running: true }),      // assigned to beta although it runs in alpha's dir
+    s5: row('s5', 'D:\\Work\\game', now, { blank: true }),               // blank and not current: hidden
+    s6: row('s6', 'D:\\Work\\game', now, { origin: 'subagent' }),       // a hand: hidden
+    s7: row('s7', 'D:\\Work\\game', now),                                 // archived: hidden
+  } };
+  const plain = (value) => JSON.parse(JSON.stringify(value)); // values made in the plugin's realm
+  const view = plugin.buildTree({ tree, list, workspaces: { archivedSessionIds: ['s7'], pinnedSessionIds: [] }, current: 's3', filter: '', collapsed: {} });
+  assert.deepEqual(plain(view.agents.map((e) => e.agent.name)), ['beta', 'alpha', 'gamma'], 'running first, then recent; not set up last');
+  const alpha = view.agents.find((e) => e.agent.agentId === 'a');
+  assert.deepEqual(plain(alpha.dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['game', ['s3', 's1']]]);
+  assert.deepEqual(plain(view.others.dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['elsewhere', ['s2']]]);
+  assert.equal(view.others.open, false, 'conversations no Agent owns wait folded');
+  assert.equal(alpha.open, true, 'the Agent holding the current conversation is open');
+  const beta = view.agents.find((e) => e.agent.agentId === 'b');
+  assert.deepEqual(plain(beta.dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['工作台', []], ['game', ['s4']]]);
+  assert.equal(view.agents.find((e) => e.agent.agentId === 'c').open, false, 'an idle Agent is folded');
+  const stored = plugin.buildTree({ tree, list, workspaces: {}, current: 's3', filter: '', collapsed: { a: true } });
+  assert.equal(stored.agents.find((e) => e.agent.agentId === 'a').open, false, 'the person\'s fold is remembered');
+  const filtered = plugin.buildTree({ tree, list, workspaces: {}, current: null, filter: 'ts4', collapsed: {} });
+  assert.deepEqual(plain(filtered.agents.map((e) => [e.agent.name, e.count])), [['beta', 1]]);
+});

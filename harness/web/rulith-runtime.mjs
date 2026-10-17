@@ -16,7 +16,7 @@ import { installProjectContext, readSourceBindings, resolveProject } from './pro
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
-import { handOf, conversationKey } from '../subagents.mjs';
+import { handOf, conversationKey, depthOf } from '../subagents.mjs';
 import { ConversationBoards } from './conversation-boards.mjs';
 import { conversationBoards } from './launcher-settings.mjs';
 export { awaitOutcome } from '../board-channel.mjs';
@@ -66,6 +66,24 @@ export function consoleGoalsUrl(consoleUrl, agentId) {
   if (origin.protocol !== 'https:' && origin.protocol !== 'http:') return '';
   return `${origin.origin}/console/#/cases?agentId=${encodeURIComponent(agentId)}`;
 }
+
+/** Every Agent paired on this computer with a usable credential: one entry per local Agent instance. */
+export function pairedAgents(home) {
+  const registry = readJson(path.join(home, 'registry.json'));
+  const out = [];
+  for (const row of (registry?.instances ?? []).filter((r) => r.mode === 'local_agent' && !r.signedOutAt)) {
+    const token = readJson(path.join(row.directory, 'local.json'))?.agent?.env?.RULITH_TOKEN;
+    if (token && row.agentId) out.push({ instanceId: row.id, agentId: row.agentId, agentName: row.agentName, token });
+  }
+  return out;
+}
+
+/** A directory path compared the way Windows and dsh compare it: resolved, without a trailing separator, case-folded on Windows. */
+export const samePath = (value) => {
+  if (typeof value !== 'string' || !value) return '';
+  const resolved = path.resolve(value).replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+};
 
 /** The Agent this dsh speaks for: the chosen instance, or the only paired local Agent in the manager home. */
 export function selectedAgent(home, agentName) {
@@ -120,23 +138,51 @@ export async function apply(ctx, config = {}) {
     return reply;
   };
 
-  // 2. The three tools follow the selected Agent. They are registered once per Agent credential and stay registered while
-  //    the connection behind them is replaced. The bridge never retries: any transport failure closes its MCP
-  //    connection, whichever hand made the call. A model mid-turn must not see its tools vanish
-  //    over that (2026-10-06: a read failing during a network blip closed the connection, the tools were unregistered
-  //    and re-registered, the model got "unknown tool" and gave up its turn).
-  let current = null;
+  // 2. Every paired Agent is attached at once (owner 2026-10-17: the sidebar is Agent -> directory -> conversation). The
+  //    three tools are registered once; each call goes to the Agent its conversation belongs to. A conversation belongs to
+  //    the Agent recorded for it (assigned when the sidebar starts it in an Agent's directory, or at its first Rulith call),
+  //    else the Agent whose directory it runs in, else the default Agent; once it has a Board it never changes Agent.
+  //    The bridge never retries: any transport failure closes its MCP connection, whichever hand made the call. A model
+  //    mid-turn must not see its tools vanish over that (2026-10-06).
+  const attached = new Map();        // agentId -> holder
+  let toolDisposers = null;
   const sessions = new Map();
   let status = { state: 'starting' };
+  const assignmentsFile = path.join(stateDir, 'rulith-session-agents.json');
+  const assignments = new Map(Object.entries(readJson(assignmentsFile) ?? {}));
+  const saveAssignments = () => fs.promises.writeFile(assignmentsFile, JSON.stringify(Object.fromEntries(assignments), null, 2)).catch(() => {});
+  let dirOwners = new Map();         // samePath(directory) -> agentId, refreshed with the sidebar tree
+  const liveConversations = () => [...attached.values()].reduce((n, h) => n + h.boards.size, 0);
   const report = (state, detail = {}) => {
-    status = { state, at: new Date().toISOString(), liveConversations: current?.boards?.size ?? 0, ...detail };
+    // A conversation set reports only its own count; the status counts every attached Agent's.
+    status = { state, at: new Date().toISOString(), agents: [...attached.values()].map((h) => h.agentName), ...detail,
+      liveConversations: liveConversations() };
     try { fs.writeFileSync(statusFile, JSON.stringify(status, null, 2)); } catch {}
   };
-  const drop = () => {
-    if (!current) return;
-    for (const dispose of current.disposers) dispose();
-    current.boards.close();
-    current = null;
+  const defaultHolder = () => {
+    const name = chosenName();
+    return [...attached.values()].find((h) => h.agentName === name) ?? attached.values().next().value;
+  };
+  const topSession = (agent) => depthOf(agent) ? agent?.session?.header?.parentSession : agent?.session?.id;
+  // Resolve without recording: used by reads and by observing new conversations.
+  const resolveHolder = (sessionId, cwd) => {
+    const assigned = typeof sessionId === 'string' ? assignments.get(sessionId) : undefined;
+    if (assigned) return attached.get(assigned);
+    const owner = cwd ? dirOwners.get(samePath(cwd)) : undefined;
+    return (owner && attached.get(owner)) ?? defaultHolder();
+  };
+  // A tool call fixes the conversation's Agent for good.
+  const holderForCall = (agent) => {
+    const id = topSession(agent);
+    const holder = resolveHolder(id, agent?.session?.header?.cwd);
+    if (holder && typeof id === 'string' && !assignments.has(id)) { assignments.set(id, holder.agentId); void saveAssignments(); }
+    return holder;
+  };
+  const drop = (holder) => {
+    if (!holder) return;
+    holder.boards.close();
+    attached.delete(holder.agentId);
+    if (!attached.size && toolDisposers) { for (const dispose of toolDisposers) dispose(); toolDisposers = null; }
   };
   const connect = async (token, conversationKey, signal) => {
     const bridge = new RulithMcp({ url: config.mcpUrl || 'https://api.rulith.ai/mcp', token, conversationKey, identity() {} });
@@ -151,33 +197,13 @@ export async function apply(ctx, config = {}) {
     } catch (error) { bridge.close(); throw error; }
     finally { signal?.removeEventListener('abort', abort); }
   };
-  const attach = async (agent) => {
-    // Reuse the first known conversation for discovery. On startup registration can precede all sessions.
-    const first = separateBoards ? sessions.values().next().value : undefined;
-    const { bridge, listed } = await connect(agent.token, first ? conversationKey(first) : undefined);
-    const holder = { token: agent.token, agentName: agent.agentName, disposers: [] };
-    holder.boards = new ConversationBoards({ enabled: separateBoards,
-      connect: (key, signal) => connect(agent.token, key, signal),
-      report: (state, detail) => {
-        if (current === holder) report(state, { agentName: holder.agentName, tools: [...TOOLS], ...detail });
-      },
-      shadow: () => new ShadowReviewer({ enabled: shadowSettings.enabled !== false, log: shadowLog,
-        chat: (route, user, signal) => reviewWithModel(ctx.llm, route, user, signal) }),
-      toolKinds: () => {
-        // The selected local Worker's explicit manifest kinds; never infer read from an Action's name or args.
-        const row = (readJson(path.join(home, 'registry.json'))?.instances ?? []).find((entry) => entry.id === agent.instanceId);
-        const env = row ? readJson(path.join(row.directory, 'local.json'))?.worker?.env ?? {} : {};
-        return readToolKinds(env.RULITH_TOOLS_FILE);
-      } });
-    if (!separateBoards) holder.boards.holder().bridge = bridge;
-    else if (first && sessions.get(first.session.id) === first) holder.boards.holder(first).bridge = bridge;
-    else bridge.close();
-    for (const agent of sessions.values()) holder.boards.observe(agent);
-    holder.disposers = listed.tools.map((tool) => ctx.tools.register({
+  const registerTools = (listed) => {
+    toolDisposers = listed.tools.map((tool) => ctx.tools.register({
       name: tool.name, description: tool.description ?? '', parameters: tool.inputSchema,
       output: { schema: {}, render: renderChannelResult },
       async execute(args, exec) {
-        if (current !== holder) throw new Error('Rulith Agent detached');
+        const holder = holderForCall(exec.agent);
+        if (!holder) throw new Error('Rulith Agent detached: this conversation\'s Agent is not attached on this computer');
         // Routing only: no hand's conversation or reasoning reaches the shadow.
         const mainRoute = exec.agent?.session?.requestHeader?.()?.config ?? exec.agent?.options ?? {};
         const outcome = await holder.boards.holder(exec.agent).channel.call(tool.name, args, { hand: handOf(exec.agent), signal: exec.signal,
@@ -188,31 +214,68 @@ export async function apply(ctx, config = {}) {
         return outcome;
       },
     }));
-    current = holder;
+  };
+  const attach = async (agent) => {
+    // Discovery: reuse the first known conversation of this Agent when there is one; on startup registration can precede
+    // all sessions.
+    const ownerOf = (a) => assignments.get(a.session.id) ?? (dirOwners.get(samePath(a.session.header?.cwd)) || null);
+    const defaultsHere = chosenName() ? agent.agentName === chosenName() : attached.size === 0;
+    const first = separateBoards ? [...sessions.values()].find((a) => !depthOf(a)
+      && (ownerOf(a) === agent.agentId || (ownerOf(a) === null && defaultsHere))) : undefined;
+    const { bridge, listed } = await connect(agent.token, first ? conversationKey(first) : undefined);
+    const holder = { agentId: agent.agentId, instanceId: agent.instanceId, token: agent.token, agentName: agent.agentName };
+    holder.boards = new ConversationBoards({ enabled: separateBoards,
+      connect: (key, signal) => connect(agent.token, key, signal),
+      report: (state, detail) => {
+        if (attached.get(holder.agentId) === holder) report(state, { agentName: holder.agentName, tools: [...TOOLS], ...detail });
+      },
+      shadow: () => new ShadowReviewer({ enabled: shadowSettings.enabled !== false, log: shadowLog,
+        chat: (route, user, signal) => reviewWithModel(ctx.llm, route, user, signal) }),
+      toolKinds: () => {
+        // This Agent's local Worker's explicit manifest kinds; never infer read from an Action's name or args.
+        const row = (readJson(path.join(home, 'registry.json'))?.instances ?? []).find((entry) => entry.id === holder.instanceId);
+        const env = row ? readJson(path.join(row.directory, 'local.json'))?.worker?.env ?? {} : {};
+        return readToolKinds(env.RULITH_TOOLS_FILE);
+      } });
+    attached.set(holder.agentId, holder);
+    if (!separateBoards) holder.boards.holder().bridge = bridge;
+    else if (first && sessions.get(first.session.id) === first) holder.boards.holder(first).bridge = bridge;
+    else bridge.close();
+    for (const a of sessions.values()) if (resolveHolder(topSession(a), a.session.header?.cwd) === holder) holder.boards.observe(a);
+    if (!toolDisposers) registerTools(listed);
+    return holder;
   };
   ctx.on('agent/created', ({ agent }) => {
     sessions.set(agent.session.id, agent);
-    current?.boards.observe(agent);
+    resolveHolder(topSession(agent), agent.session.header?.cwd)?.boards.observe(agent);
   });
   ctx.on('session/disposed', (session) => {
     sessions.delete(session.id);
-    current?.boards.disposeSession(session);
+    for (const holder of attached.values()) holder.boards.disposeSession(session);
   });
   let busy = false;
   const tick = async () => {
     if (busy) return; busy = true;
     try {
-      const agent = selectedAgent(home, chosenName());
-      if (!agent) { drop(); report('no_agent', { hint: 'Sign in with the Deep Rulith entry and choose an Agent' }); }
-      else if (agent.token !== current?.token) {
-        drop(); await attach(agent); report('attached', { agentName: agent.agentName, tools: [...TOOLS] });
+      const paired = pairedAgents(home);
+      const wanted = new Map(paired.map((a) => [a.agentId, a]));
+      for (const holder of [...attached.values()])
+        if (wanted.get(holder.agentId)?.token !== holder.token) drop(holder);
+      const failures = [];
+      for (const agent of paired) {
+        if (attached.has(agent.agentId)) continue;
+        try { await attach(agent); }
+        catch (error) { failures.push(`${agent.agentName}: ${String(error?.message ?? error).slice(0, 160)}`); }
       }
-      // Run independently: one idle conversation's retry budget cannot block another or Agent selection.
-      void current?.boards.reconnectIdle();
-    } catch (error) { drop(); report('failed', { error: String(error?.message ?? error).slice(0, 300) }); } finally { busy = false; }
+      if (!paired.length) report('no_agent', { hint: 'Sign in with the Deep Rulith entry and set up an Agent' });
+      else if (!attached.size) report('failed', { error: failures.join('; ').slice(0, 300) });
+      else report('attached', { agentName: defaultHolder()?.agentName, tools: [...TOOLS], ...(failures.length ? { failures } : {}) });
+      // Run independently: one idle conversation's retry budget cannot block another or Agent attachment.
+      for (const holder of attached.values()) void holder.boards.reconnectIdle();
+    } catch (error) { report('failed', { error: String(error?.message ?? error).slice(0, 300) }); } finally { busy = false; }
   };
   const timer = setInterval(tick, 3000);
-  ctx.effect(() => () => { clearInterval(timer); drop(); });
+  ctx.effect(() => () => { clearInterval(timer); for (const holder of [...attached.values()]) drop(holder); });
 
   // 3. The browser half's API: same origin only (the custom header cannot be sent cross-origin without a preflight,
   //    which this route never grants). Answers carry no token, key or secret.
@@ -234,7 +297,7 @@ export async function apply(ctx, config = {}) {
           worker: instance?.workerSetting ? { enabled: !!instance.workerSetting.enabled, state: instance.workerSetting.state ?? '',
             failure: instance.workerSetting.failure ?? '' } : null };
       }),
-      selected: current?.agentName ?? chosen ?? '',
+      selected: defaultHolder()?.agentName ?? chosen ?? '',
       tools: status,
       model: state.modelDefaults ? { name: state.modelDefaults.name ?? '', url: state.modelDefaults.url ?? '',
         configured: !!state.modelDefaults.configured } : null,
@@ -298,32 +361,36 @@ export async function apply(ctx, config = {}) {
   };
   // Where each Source this Agent may use is bound, as Console locked it: the same read-only list the Worker loads at
   // start (GET <work>/sources with its own Connection credentials). Only names, types and locations reach the page.
-  let sourcesCache = null;
+  const sourcesCache = new Map();
   const boundSources = async (instanceId) => {
-    if (sourcesCache?.instanceId === instanceId && Date.now() - sourcesCache.at < 60_000) return sourcesCache.rows;
+    const cached = sourcesCache.get(instanceId);
+    if (cached && Date.now() - cached.at < 60_000) return cached.rows;
     const row = (readJson(path.join(home, 'registry.json'))?.instances ?? []).find((entry) => entry.id === instanceId);
     const env = row ? readJson(path.join(row.directory, 'local.json'))?.worker?.env ?? {} : {};
     const rows = await readSourceBindings(env);
-    sourcesCache = { instanceId, at: Date.now(), rows };
+    sourcesCache.set(instanceId, { at: Date.now(), rows });
     return rows;
   };
-  const conversationSources = async () => {
-    const agent = selectedAgent(home, chosenName());
-    if (!agent) throw new Error('No selected Agent');
-    return boundSources(agent.instanceId);
-  };
-  installProjectContext(ctx, conversationSources);
-  const project = async ({ workspace }) => {
+  // The Agent a panel request is about: the conversation's, else the default one.
+  const agentForRequest = (query = {}) => resolveHolder(query.session, query.workspace ?? undefined) ?? null;
+  installProjectContext(ctx, async (agent) => {
+    const holder = agent ? resolveHolder(topSession(agent), agent.session?.header?.cwd) : defaultHolder();
+    if (!holder) throw new Error('No attached Agent');
+    return boundSources(holder.instanceId);
+  });
+  const project = async ({ workspace, session }) => {
     try {
-      const sources = await conversationSources();
+      const holder = agentForRequest({ session, workspace });
+      if (!holder) throw new Error('No attached Agent');
+      const sources = await boundSources(holder.instanceId);
       return { workspace, project: resolveProject(workspace, sources) };
     } catch {
       console.error('[rulith project] Sources cannot be read; panel project unavailable');
       return { workspace, unavailable: true };
     }
   };
-  const workerTrace = async () => {
-    const agent = selectedAgent(home, chosenName());
+  const workerTrace = async (query = {}) => {
+    const agent = agentForRequest(query);
     if (!agent) return { available: false };
     const sources = await boundSources(agent.instanceId).catch(() => {
       console.error('[rulith project] Sources cannot be read; Worker bindings unavailable');
@@ -352,8 +419,8 @@ export async function apply(ctx, config = {}) {
   };
   // What needs a person for the selected Agent, from the local manager's Health read (Runtime 0.12.6+): one line each, with
   // the place to fix it. Read on a slow poll; the manager itself reads the service only when asked.
-  const health = async () => {
-    const agent = selectedAgent(home, chosenName());
+  const health = async (query = {}) => {
+    const agent = agentForRequest(query);
     if (!agent) return { available: false };
     const goalsUrl = consoleGoalsUrl(config.consoleUrl, agent.agentId);
     let reply;
@@ -377,7 +444,7 @@ export async function apply(ctx, config = {}) {
   // through its own setup route (the same no-credential proposal the Runtime wizard sends); the person then confirms it
   // once in the Agent's Runtime page in Console, which binds the Source and pins the tools this computer reported.
   const proposeFolder = async (body) => {
-    const agent = selectedAgent(home, chosenName());
+    const agent = agentForRequest({ session: body.session });
     if (!agent) throw new Error('Choose an Agent first');
     const source = String(body.source ?? '').trim(), folder = String(body.path ?? '').trim();
     if (!source || !folder) throw new Error('Name the Source and the folder');
@@ -396,35 +463,77 @@ export async function apply(ctx, config = {}) {
   // Rulith has no Board yet, and asking must not open a connection (same rule as the Board panel).
   const pendingControls = new Map();
   const conversationTarget = (session) => {
-    const agent = selectedAgent(home, chosenName());
-    if (!agent) throw new Error('Choose an Agent first');
-    if (!current?.boards?.enabled) throw new Error('Conversation Boards are off for this launcher; set the exploration mode and reviewer for the Agent in Console');
     if (typeof session !== 'string' || !session) throw new Error('Invalid session id.');
+    const holder = resolveHolder(session, sessions.get(session)?.session?.header?.cwd);
+    if (!holder) throw new Error('Choose an Agent first');
+    if (!holder.boards.enabled) throw new Error('Conversation Boards are off for this launcher; set the exploration mode and reviewer for the Agent in Console');
     // The key is a function of the top-level session id (subagents.mjs), so a conversation that has not called Rulith yet,
     // or one opened from before this launcher started, is addressed the same way as an observed one.
-    const key = current.boards.sessions.get(session) ?? conversationKey({ session: { id: session } });
-    return { agentId: agent.agentId, conversationKey: key };
+    const key = holder.boards.sessions.get(session) ?? conversationKey({ session: { id: session } });
+    return { agentId: holder.agentId, conversationKey: key, holder };
   };
   // A setting chosen before the conversation's first Rulith call: open its Board first (MCP initialize creates it with the
   // Agent's defaults), then the switch applies to that Board. Only on the owner's explicit choice, never from polling.
   const withBoard = async (target, send) => {
     const first = await send();
     if (first.found !== false) return first;
-    await current.boards.ensureBoard(target.conversationKey);
+    // Opening the Board fixes the conversation's Agent, as a tool call would.
+    if (!assignments.has(target.session)) { assignments.set(target.session, target.agentId); void saveAssignments(); }
+    await target.holder.boards.ensureBoard(target.conversationKey);
     return send();
+  };
+  // Agent -> directory -> conversation. Directories are the Agent's file Sources on this computer; an Agent without one
+  // gets its own empty working directory under the dsh home, so that it can still hold conversations (dsh needs a
+  // directory per conversation). Only names, ids, paths and states reach the page.
+  const slug = (name) => String(name || 'agent').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'agent';
+  const sidebarTree = async () => {
+    const state = await manager('/manager/state');
+    const instances = (state.instances ?? []).filter((row) => row.mode === 'local_agent' && !row.signedOutAt);
+    const owners = new Map();
+    const agents = [];
+    for (const agent of state.device?.agents ?? []) {
+      const instance = instances.find((row) => row.agentId === agent.id);
+      const holder = attached.get(agent.id);
+      const directories = [];
+      if (holder) {
+        const sources = await boundSources(holder.instanceId).catch(() => []);
+        for (const source of sources) {
+          if (source.type !== 'file' || !source.location) continue;
+          let exists = false;
+          try { exists = fs.statSync(source.location).isDirectory(); } catch {}
+          if (!exists || directories.some((d) => samePath(d.path) === samePath(source.location))) continue;
+          directories.push({ path: path.resolve(source.location), label: source.name, source: source.name });
+        }
+        if (!directories.length) {
+          const own = path.join(stateDir, 'agents', slug(agent.name));
+          try { fs.mkdirSync(own, { recursive: true }); } catch {}
+          directories.push({ path: own, label: '工作台', source: null });
+        }
+      }
+      agents.push({ agentId: agent.id, name: agent.name, attached: !!holder, paired: !!instance?.paired,
+        worker: instance?.workerSetting ? { enabled: !!instance.workerSetting.enabled, state: instance.workerSetting.state ?? '' } : null,
+        liveConversations: holder?.boards.size ?? 0, directories });
+    }
+    // A directory several Agents share belongs, for conversations not yet assigned, to the default Agent when it is one
+    // of them (it was the only Agent before the sidebar existed), else to the first.
+    const defaultId = defaultHolder()?.agentId;
+    for (const a of [...agents].sort((x, y) => (y.agentId === defaultId) - (x.agentId === defaultId)))
+      for (const d of a.directories) if (!owners.has(samePath(d.path))) owners.set(samePath(d.path), a.agentId);
+    dirOwners = owners;
+    return { defaultAgentId: defaultHolder()?.agentId ?? null, agents, assignments: Object.fromEntries(assignments) };
   };
   const routes = {
     'POST /rulith/api/folder': proposeFolder,
-    'GET /rulith/api/health': health,
+    'GET /rulith/api/health': (query) => health(query),
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
-    'GET /rulith/api/worker': workerTrace,
+    'GET /rulith/api/worker': (query) => workerTrace(query),
     'GET /rulith/api/project': project,
     'POST /rulith/api/signin': async () => {
       const reply = await manager('/manager/device/start', { consoleUrl, name: os.hostname() });
       return { url: reply.device?.consoleUrl ?? '' };
     },
     'POST /rulith/api/signin/poll': async () => { await manager('/manager/device/poll', {}); return summary(await manager('/manager/state')); },
-    'POST /rulith/api/signout': async () => { await manager('/manager/device/signout', {}); drop(); return summary(await manager('/manager/state')); },
+    'POST /rulith/api/signout': async () => { await manager('/manager/device/signout', {}); for (const holder of [...attached.values()]) drop(holder); return summary(await manager('/manager/state')); },
     'POST /rulith/api/select': async (body) => {
       const state = await manager('/manager/state');
       const agent = (state.device?.agents ?? []).find((row) => row.id === String(body.agentId ?? ''));
@@ -448,27 +557,54 @@ export async function apply(ctx, config = {}) {
       await manager('/manager/instances/worker-setting', { instanceId: String(body.instanceId ?? ''), enabled: body.enabled === true });
       return summary(await manager('/manager/state'));
     },
-    'GET /rulith/api/board': (query) => cachedBoard(current, status, query.session),
+    'GET /rulith/api/board': (query) => cachedBoard(query.session === undefined ? defaultHolder() : resolveHolder(query.session,
+      sessions.get(query.session)?.session?.header?.cwd), status, query.session),
+    // The sidebar: every Agent of the signed-in account, its directories on this computer and which conversation is whose.
+    'GET /rulith/api/tree': () => sidebarTree(),
+    // The sidebar starts a conversation in one Agent's directory and records the Agent before the first message. A
+    // conversation that already has a Board keeps its Agent.
+    'POST /rulith/api/sessions/assign': async (body) => {
+      const session = String(body.session ?? ''), agentId = String(body.agentId ?? '');
+      if (!session || !agentId) throw new Error('Name the conversation and the Agent');
+      const holder = attached.get(agentId);
+      if (!holder) throw new Error('That Agent is not set up on this computer');
+      const before = assignments.get(session);
+      if (before && before !== agentId) {
+        const previous = attached.get(before);
+        const hasBoard = previous?.boards.sessions.has(session) && previous.boards.holders.has(previous.boards.sessions.get(session));
+        if (hasBoard) throw new Error('This conversation already works on another Agent\'s Board; start a new conversation instead');
+        previous?.boards.disposeSession({ id: session });
+      }
+      assignments.set(session, agentId); await saveAssignments();
+      const live = sessions.get(session);
+      if (live) holder.boards.observe(live);
+      return { session, agentId };
+    },
     // ACC-CONV-05/06 (PSC 0.2.16 ③): this conversation's own exploration mode and post-call review switch, issued by the
     // signed-in owner's client through the manager's device grant. The conversation names itself by its key; nothing else
     // of the manager's state reaches the browser (conversationView picks the fields).
-    'GET /rulith/api/conversation': async (query) => conversationView(await manager('/manager/conversations/state', conversationTarget(query.session))),
+    'GET /rulith/api/conversation': async (query) => {
+      const { agentId, conversationKey: key } = conversationTarget(query.session);
+      return conversationView(await manager('/manager/conversations/state', { agentId, conversationKey: key }));
+    },
     'POST /rulith/api/conversation/exploration-mode': async (body) => {
       // A control's request id is its identity: a reply lost in transit leaves the control pending on the Gateway, and only
       // the same id resumes it (a new one is refused as control_pending). Keep the id of an unconfirmed switch and resend it
       // for the same conversation, Connection and mode until the Gateway answers complete.
-      const target = conversationTarget(body.session);
+      const target = { ...conversationTarget(body.session), session: body.session };
       const connectionId = String(body.connectionId ?? ''), mode = String(body.mode ?? '');
       const pendingKey = `${target.conversationKey}|${connectionId}|${mode}`;
       const requestId = pendingControls.get(pendingKey) ?? randomUUID();
       pendingControls.set(pendingKey, requestId);
-      const view = await withBoard(target, async () => conversationView(await manager('/manager/conversations/exploration-mode', { ...target, connectionId, mode, requestId })));
+      const view = await withBoard(target, async () => conversationView(await manager('/manager/conversations/exploration-mode',
+        { agentId: target.agentId, conversationKey: target.conversationKey, connectionId, mode, requestId })));
       if (view.state === 'complete') pendingControls.delete(pendingKey);
       return view;
     },
     'POST /rulith/api/conversation/review': async (body) => {
-      const target = conversationTarget(body.session);
-      return withBoard(target, async () => conversationView(await manager('/manager/conversations/review', { ...target, enabled: body.enabled === true })));
+      const target = { ...conversationTarget(body.session), session: body.session };
+      return withBoard(target, async () => conversationView(await manager('/manager/conversations/review',
+        { agentId: target.agentId, conversationKey: target.conversationKey, enabled: body.enabled === true })));
     },
     // The workbench address carries the manager key: handed out only on this guarded same-origin request.
     'POST /rulith/api/workbench': async () => ({ url: `http://127.0.0.1:${port}/?k=${key}` }),
