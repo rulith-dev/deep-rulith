@@ -311,10 +311,12 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = useState(null);           // null | "mode:<connectionId>" | "review"
       const [confirming, setConfirming] = useState(null); // { connectionId, mode } awaiting the approved confirmation
       useEffect(() => { setOpen(null); setConfirming(null); setNote(""); }, [sessionId]);
-      // Nothing to show until this conversation has a Board (its first Rulith call) and the launcher can read it.
-      if (!settings || !settings.ok || !settings.found || !settings.conversation) return null;
-      const conversation = settings.conversation;
-      const modes = conversation.explorationModes || null;
+      // Nothing to show until the launcher can read this conversation. Without a Board yet (no Rulith call so far) the chips
+      // read "默认": the first choice opens the Board with the Agent's defaults and then applies.
+      if (!settings || !settings.ok) return null;
+      const fresh = settings.found === false;
+      const conversation = settings.conversation || {};
+      const modes = fresh ? null : (conversation.explorationModes || null);
       const connections = Array.isArray(settings.connections) ? settings.connections : [];
       const close = () => { setOpen(null); setConfirming(null); };
       const chooseMode = (connectionId, currentMode, next) => {
@@ -324,7 +326,7 @@ window.__ModuleLoader__.load({
       const controls = connections.map((connection) => {
         const currentMode = modes ? modes[connection.connectionId] : undefined;
         const key = "mode:" + connection.connectionId;
-        const label = (connections.length > 1 ? (connection.name || connection.connectionId) + " · " : "") + "探索：" + (currentMode ? MODE_WORDS[currentMode] || currentMode : "读不准");
+        const label = (connections.length > 1 ? (connection.name || connection.connectionId) + " · " : "") + "探索：" + (currentMode ? MODE_WORDS[currentMode] || currentMode : fresh ? "默认" : "读不准");
         return h("span", { key, style: { position: "relative", display: "inline-flex" }, "data-rulith-mode": connection.connectionId },
           h("button", { type: "button", style: chip, "aria-haspopup": "menu", "aria-expanded": open === key, title: "本会话的探索模式（只改这个会话）",
             onClick: () => setOpen(open === key ? null : key) }, label, h("span", { style: { opacity: 0.6 } }, "▾")),
@@ -337,21 +339,21 @@ window.__ModuleLoader__.load({
                   h("button", { type: "button", style: { ...chip }, onClick: () => { const c = confirming; close(); applyMode(c.connectionId, c.mode); } }, WIDEN_TEXT[confirming.mode].accept),
                   h("button", { type: "button", style: { ...chip }, onClick: () => setConfirming(null) }, WIDEN_TEXT[confirming.mode].cancel)))
               : h("div", null,
-                h("div", { style: { ...small, padding: "2px 8px 4px" } }, "本会话的探索模式 · 收窄立即生效，放宽先确认"),
+                h("div", { style: { ...small, padding: "2px 8px 4px" } }, fresh ? "本会话还没有 Board：选一档就建板并生效（Agent 的默认档位之外的放宽先确认）" : "本会话的探索模式 · 收窄立即生效，放宽先确认"),
                 MODE_ORDER.map((mode) => h("button", { key: mode, type: "button", role: "menuitemradio", "aria-checked": mode === currentMode,
-                  style: { ...item, fontWeight: mode === currentMode ? 600 : 400 }, disabled: !currentMode || mode === currentMode,
-                  onClick: () => chooseMode(connection.connectionId, currentMode, mode) }, (mode === currentMode ? "● " : "○ ") + MODE_WORDS[mode] + "探索模式")))) : null);
+                  style: { ...item, fontWeight: mode === currentMode ? 600 : 400 }, disabled: (!fresh && !currentMode) || mode === currentMode,
+                  onClick: () => chooseMode(connection.connectionId, currentMode ?? "strict", mode) }, (mode === currentMode ? "● " : "○ ") + MODE_WORDS[mode] + "探索模式")))) : null);
       });
-      const reviewOn = conversation.postCallReview === true;
-      const review = h("span", { style: { position: "relative", display: "inline-flex" }, "data-rulith-review": reviewOn ? "on" : "off" },
+      const reviewOn = fresh ? true : conversation.postCallReview === true;
+      const review = h("span", { style: { position: "relative", display: "inline-flex" }, "data-rulith-review": fresh ? "default" : reviewOn ? "on" : "off" },
         h("button", { type: "button", style: chip, "aria-haspopup": "menu", "aria-expanded": open === "review", title: "本会话的事后审查（只改这个会话）",
-          onClick: () => setOpen(open === "review" ? null : "review") }, "审查：" + (reviewOn ? "开" : "关"), h("span", { style: { opacity: 0.6 } }, "▾")),
+          onClick: () => setOpen(open === "review" ? null : "review") }, "审查：" + (fresh ? "默认" : reviewOn ? "开" : "关"), h("span", { style: { opacity: 0.6 } }, "▾")),
         open === "review" ? h("div", { role: "menu", style: menu },
           h("div", { style: { ...small, padding: "2px 8px 4px" } }, settings.reviewer ? "本会话写入调用的事后审查，自下一次调用起" : "这个 Agent 没有指定审查员：开着也不审"),
-          h("button", { type: "button", role: "menuitemradio", "aria-checked": reviewOn, style: { ...item, fontWeight: reviewOn ? 600 : 400 }, disabled: reviewOn,
-            onClick: () => { close(); applyReview(true); } }, (reviewOn ? "● " : "○ ") + "开：写入调用送审查员"),
-          h("button", { type: "button", role: "menuitemradio", "aria-checked": !reviewOn, style: { ...item, fontWeight: reviewOn ? 400 : 600 }, disabled: !reviewOn,
-            onClick: () => { close(); applyReview(false); } }, (reviewOn ? "○ " : "● ") + "关：本会话不审（推导档下不能关）")) : null);
+          h("button", { type: "button", role: "menuitemradio", "aria-checked": !fresh && reviewOn, style: { ...item, fontWeight: !fresh && reviewOn ? 600 : 400 }, disabled: !fresh && reviewOn,
+            onClick: () => { close(); applyReview(true); } }, (!fresh && reviewOn ? "● " : "○ ") + "开：写入调用送审查员"),
+          h("button", { type: "button", role: "menuitemradio", "aria-checked": !fresh && !reviewOn, style: { ...item, fontWeight: !fresh && !reviewOn ? 600 : 400 }, disabled: !fresh && !reviewOn,
+            onClick: () => { close(); applyReview(false); } }, (!fresh && !reviewOn ? "● " : "○ ") + "关：本会话不审（推导档下不能关）")) : null);
       return h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 4 }, "data-rulith-composer": sessionId },
         controls, review,
         note ? h("span", { role: "alert", style: { ...small, color: AMBER, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }, title: note }, note) : null);

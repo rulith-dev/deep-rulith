@@ -28,8 +28,14 @@ export class ConversationBoards {
     }
     return key;
   }
-  holder(agent) {
-    const key = this.observe(agent);
+  holder(agent) { return this.holderForKey(this.observe(agent)); }
+  /**
+   * The holder of one conversation by its key, created on demand. Normally a holder appears when dsh creates the
+   * conversation's agent (observe); the owner's composer controls may also need one for a conversation that has not called
+   * Rulith yet, so that choosing a mode can open its Board first (ensureBoard).
+   */
+  holderForKey(key) {
+    if (this.closed) throw new Error('Rulith Agent detached');
     let holder = this.holders.get(key);
     if (holder) return holder;
     holder = { key, bridge: null, connecting: null, stop: new AbortController(), state: 'attached', detail: {} };
@@ -90,6 +96,11 @@ export class ConversationBoards {
       throw error;
     }).finally(() => { holder.connecting = null; });
     return holder.connecting;
+  }
+  /** Open this conversation's Board now (an MCP initialize, which creates the Board on first use), without a tool call. */
+  async ensureBoard(key) {
+    if (!this.enabled) throw new Error('Conversation Boards are off for this launcher');
+    await this.liveBridge(this.holderForKey(key));
   }
   async reconnectIdle() {
     await Promise.all([...this.holders.values()].filter((holder) => holder.bridge?.closed && !holder.idleExhausted)

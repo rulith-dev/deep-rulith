@@ -400,9 +400,18 @@ export async function apply(ctx, config = {}) {
     if (!agent) throw new Error('Choose an Agent first');
     if (!current?.boards?.enabled) throw new Error('Conversation Boards are off for this launcher; set the exploration mode and reviewer for the Agent in Console');
     if (typeof session !== 'string' || !session) throw new Error('Invalid session id.');
-    const key = current.boards.sessions.get(session);
-    if (key === undefined) throw new Error('This conversation has not used Rulith yet');
+    // The key is a function of the top-level session id (subagents.mjs), so a conversation that has not called Rulith yet,
+    // or one opened from before this launcher started, is addressed the same way as an observed one.
+    const key = current.boards.sessions.get(session) ?? conversationKey({ session: { id: session } });
     return { agentId: agent.agentId, conversationKey: key };
+  };
+  // A setting chosen before the conversation's first Rulith call: open its Board first (MCP initialize creates it with the
+  // Agent's defaults), then the switch applies to that Board. Only on the owner's explicit choice, never from polling.
+  const withBoard = async (target, send) => {
+    const first = await send();
+    if (first.found !== false) return first;
+    await current.boards.ensureBoard(target.conversationKey);
+    return send();
   };
   const routes = {
     'POST /rulith/api/folder': proposeFolder,
@@ -453,12 +462,14 @@ export async function apply(ctx, config = {}) {
       const pendingKey = `${target.conversationKey}|${connectionId}|${mode}`;
       const requestId = pendingControls.get(pendingKey) ?? randomUUID();
       pendingControls.set(pendingKey, requestId);
-      const view = conversationView(await manager('/manager/conversations/exploration-mode', { ...target, connectionId, mode, requestId }));
+      const view = await withBoard(target, async () => conversationView(await manager('/manager/conversations/exploration-mode', { ...target, connectionId, mode, requestId })));
       if (view.state === 'complete') pendingControls.delete(pendingKey);
       return view;
     },
-    'POST /rulith/api/conversation/review': async (body) => conversationView(await manager('/manager/conversations/review',
-      { ...conversationTarget(body.session), enabled: body.enabled === true })),
+    'POST /rulith/api/conversation/review': async (body) => {
+      const target = conversationTarget(body.session);
+      return withBoard(target, async () => conversationView(await manager('/manager/conversations/review', { ...target, enabled: body.enabled === true })));
+    },
     // The workbench address carries the manager key: handed out only on this guarded same-origin request.
     'POST /rulith/api/workbench': async () => ({ url: `http://127.0.0.1:${port}/?k=${key}` }),
   };

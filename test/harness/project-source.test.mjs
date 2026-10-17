@@ -304,4 +304,28 @@ test('the composer tool row carries this conversation\'s exploration mode and re
   assert.ok(strings.some((t) => t.includes('审查：开')), 'the review chip shows this conversation\'s switch');
   assert.ok(rendered.some((n) => n.props && n.props['data-rulith-composer'] === 'session-9'));
   void text;
+  // A conversation without a Board yet still shows both chips, reading "默认": a choice will open the Board first.
+  reply.found = false; delete reply.conversation;
+  cells.length = 0; cursor = 0; assert.equal(controls({ sessionId: 'session-new' }), null);
+  for (const fn of effects.splice(0)) await fn();
+  await new Promise((resolve) => setImmediate(resolve));
+  cursor = 0; const freshStrings = flatten(controls({ sessionId: 'session-new' })).flatMap((n) => n.children || []).filter((c) => typeof c === 'string');
+  assert.ok(freshStrings.some((t) => t.includes('探索：默认')), 'no Board yet: the exploration chip reads 默认');
+  assert.ok(freshStrings.some((t) => t.includes('审查：默认')), 'no Board yet: the review chip reads 默认');
+});
+
+test('a conversation that never called Rulith is addressed by the key of its session id, and a holder can be made for it', async () => {
+  const { ConversationBoards } = await import('../../harness/web/conversation-boards.mjs');
+  const { conversationKey } = await import('../../harness/subagents.mjs');
+  let connected = [];
+  const boards = new ConversationBoards({ enabled: true, shadow: () => null, toolKinds: {}, report() {},
+    connect: async (key) => { connected.push(key); return { bridge: { closed: false, focusedGoals: [], close() {}, call: async () => ({}) } }; } });
+  const key = conversationKey({ session: { id: 'session-never' } });
+  assert.equal(key, 'dsh:session-never');
+  assert.equal(boards.holders.size, 0);
+  await boards.ensureBoard(key);
+  assert.deepEqual(connected, ['dsh:session-never'], 'ensureBoard opens exactly this conversation, once');
+  await boards.ensureBoard(key);
+  assert.equal(connected.length, 1, 'an open Board is not reopened');
+  boards.close();
 });
