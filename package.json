@@ -12,6 +12,6 @@
     "test": "node --test --test-concurrency=4 test/harness/kit.test.mjs test/harness/board-transcript.test.mjs test/harness/context-relief.test.mjs test/harness/board-channel.test.mjs test/harness/conversation-boards.test.mjs test/harness/subagent-integration.test.mjs test/harness/write-note.test.mjs test/harness/outgoing-trim.test.mjs test/harness/project-source.test.mjs test/harness/v4-surface.test.mjs test/harness/shadow-reviewer.test.mjs test/harness/launcher.test.mjs test/harness/web-tools.test.mjs test/harness/general-kit.test.mjs"
   },
   "dependencies": {
-    "rulith": "^0.17.1"
+    "rulith": "^0.17.2"
   }
 }

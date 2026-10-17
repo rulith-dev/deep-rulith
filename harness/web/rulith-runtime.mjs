@@ -8,7 +8,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installOutgoingTrim } from './outgoing-trim.mjs';
@@ -48,7 +48,8 @@ export function cachedBoard(current, status, session) {
 export function conversationView(reply) {
   const out = {};
   for (const field of ['found', 'conversation', 'connections', 'reviewer', 'state', 'result', 'teaching', 'requestId', 'boardId',
-    'postCallReview', 'explorationModes']) if (reply?.[field] !== undefined) out[field] = reply[field];
+    'postCallReview', 'explorationModes', 'openGoals', 'pendingCall', 'ended', 'endedAt', 'closedGoals', 'unconfirmedGoals'])
+    if (reply?.[field] !== undefined) out[field] = reply[field];
   return out;
 }
 
@@ -605,6 +606,20 @@ export async function apply(ctx, config = {}) {
       const target = { ...conversationTarget(body.session), session: body.session };
       return withBoard(target, async () => conversationView(await manager('/manager/conversations/review',
         { agentId: target.agentId, conversationKey: target.conversationKey, enabled: body.enabled === true })));
+    },
+    // PSC 0.2.21: deleting a conversation. The preview feeds the confirmation dialog; the deletion seals the conversation's
+    // Board and closes its open goals as abandoned (records are kept). Its request id is fixed by the conversation, so a
+    // retry after a lost reply finishes the same deletion. The browser then removes the conversation from the list.
+    'POST /rulith/api/conversation/end-preview': async (body) => {
+      const { agentId, conversationKey: key } = conversationTarget(body.session);
+      return conversationView(await manager('/manager/conversations/end-preview', { agentId, conversationKey: key }));
+    },
+    'POST /rulith/api/conversation/end': async (body) => {
+      const target = conversationTarget(body.session);
+      const view = conversationView(await manager('/manager/conversations/end', { agentId: target.agentId,
+        conversationKey: target.conversationKey, requestId: 'end.' + createHash('sha256').update(String(body.session)).digest('hex').slice(0, 32) }));
+      if (view.ended) target.holder.boards.drop(target.conversationKey);
+      return view;
     },
     // The workbench address carries the manager key: handed out only on this guarded same-origin request.
     'POST /rulith/api/workbench': async () => ({ url: `http://127.0.0.1:${port}/?k=${key}` }),

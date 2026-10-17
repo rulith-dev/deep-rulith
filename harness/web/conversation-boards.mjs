@@ -4,7 +4,7 @@ import { BoardChannel } from '../board-channel.mjs';
 import { conversationKey, depthOf } from '../subagents.mjs';
 
 const TRANSIENT = /^(MCP transport failed|MCP request refused|MCP response unreadable|MCP connection closed|connection_replaced)$/;
-const terminal = (error) => ['conversation_limit', 'exploration_control_pending'].includes(error?.reason);
+const terminal = (error) => ['conversation_limit', 'exploration_control_pending', 'conversation_ended'].includes(error?.reason);
 const unexecuted = (error) => error?.requestExecuted === false || error?.reason === 'session_unavailable';
 const transient = (error) => (!error?.reason || error.reason === 'connection_replaced') && TRANSIENT.test(String(error?.message ?? ''));
 

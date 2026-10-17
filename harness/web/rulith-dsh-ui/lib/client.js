@@ -455,6 +455,7 @@ window.__ModuleLoader__.load({
         const [more, setMore] = useState({});
         const [busy, setBusy] = useState("");
         const [note, setNote] = useState("");
+        const [deleting, setDeleting] = useState(null); // { id, title, agentName, found, goals }
         if (!wide) return h("button", { type: "button", title: "展开智能体列表", onClick: expandSidebar,
           style: { ...button, display: "block", margin: "8px auto" } }, "☰");
         const current = selection && selection.sessionId;
@@ -463,6 +464,34 @@ window.__ModuleLoader__.load({
         const toggle = (key, open) => { const next = { ...collapsed, [key]: open }; setCollapsed(next); saveCollapsed(next); };
         const open = (id) => { try { services.ui.openSession(id); } catch (error) { setNote(String(error && error.message || error)); } };
         const archive = (id) => Promise.resolve(services.ui.archiveSession(id)).catch((error) => setNote(String(error && error.message || error)));
+        // PSC 0.2.21: deleting asks first. A call still without a result refuses before any dialog.
+        const askDelete = async (s, agentName) => {
+          if (busy) return;
+          setNote("");
+          const title = s.blank ? "新会话" : (s.title && s.title.trim()) || "未命名会话";
+          try {
+            const preview = await api("conversation/end-preview", { session: s.id });
+            if (!preview.ok) { setNote(preview.teaching || "读不到这个会话的 Board"); return; }
+            if (preview.pendingCall) { setNote("这个会话还有一次没有结果的调用，先在 Console 处理它。"); return; }
+            setDeleting({ id: s.id, title, agentName, found: preview.found !== false, goals: Array.isArray(preview.openGoals) ? preview.openGoals.length : 0 });
+          } catch (error) { setNote(String(error && error.message || error)); }
+        };
+        const confirmDelete = async () => {
+          const target = deleting;
+          if (!target || busy) return;
+          setBusy("delete");
+          try {
+            const reply = await api("conversation/end", { session: target.id });
+            if (!reply.ok) { setNote(reply.teaching || "没有删除"); return; }
+            const left = Array.isArray(reply.unconfirmedGoals) ? reply.unconfirmedGoals.length : 0;
+            setDeleting(null);
+            // 目标没有全部结案时不从列表移走：再删一次会补做。
+            if (left || reply.goalsUnread) { setNote("已删除，但还有" + (left ? " " + left + " 个" : "") + "目标没能结案：再删除一次会补做。"); refreshTree(); return; }
+            await archive(target.id);
+            refreshTree();
+          } catch (error) { setNote(String(error && error.message || error)); }
+          finally { setBusy(""); }
+        };
         const newSession = async (agent, dir) => {
           if (busy) return;
           setBusy(agent.agentId); setNote("");
@@ -491,7 +520,7 @@ window.__ModuleLoader__.load({
           const dir = (s && own.dirs.find((d) => samePath(d.path) === samePath(s.cwd))) || firstDir(own);
           if (dir) newSession(own.agent, dir);
         };
-        const sessionRow = (s) => h("div", { key: s.id, role: "button", tabIndex: 0, "data-rulith-session": s.id,
+        const sessionRow = (s, agentName) => h("div", { key: s.id, role: "button", tabIndex: 0, "data-rulith-session": s.id,
             onClick: () => open(s.id), onKeyDown: (event) => { if (event.key === "Enter") open(s.id); },
             style: { display: "flex", alignItems: "center", gap: 6, padding: "3px 6px 3px 34px", borderRadius: 6, cursor: "pointer", fontSize: 13,
               background: s.id === current ? "rgba(127,127,127,.20)" : "transparent" } },
@@ -499,6 +528,7 @@ window.__ModuleLoader__.load({
           h("span", { title: s.title || "", style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
             s.blank ? "新会话" : (s.title && s.title.trim()) || "未命名会话"),
           h("span", { style: { ...small, flex: "none" } }, agoText(s.updatedAt)),
+          h("button", { type: "button", title: "删除这个会话", "data-rulith-delete": s.id, style: tiny, onClick: (event) => { event.stopPropagation(); askDelete(s, agentName); } }, "🗑"),
           h("button", { type: "button", title: "归档这个会话", style: tiny, onClick: (event) => { event.stopPropagation(); archive(s.id); } }, "×"));
         const dirBlock = (entry, d) => {
           const key = "d:" + d.key;
@@ -513,7 +543,7 @@ window.__ModuleLoader__.load({
               h("span", { style: small }, d.sessions.length || ""),
               entry.agent.attached ? h("button", { type: "button", title: "在这个目录开新会话", disabled: !!busy, style: tiny,
                 onClick: () => newSession(entry.agent, d) }, "+") : null),
-            shut ? null : h("div", null, shown.map(sessionRow),
+            shut ? null : h("div", null, shown.map((s) => sessionRow(s, entry.agent.name)),
               d.sessions.length > SHOWN && !filter ? h("button", { type: "button", style: { ...tiny, padding: "1px 34px", fontSize: 12 },
                 onClick: () => setMore({ ...more, [d.key]: !showAll }) }, showAll ? "收起" : "更多（" + (d.sessions.length - SHOWN) + "）") : null));
         };
@@ -546,7 +576,25 @@ window.__ModuleLoader__.load({
               h("span", { style: { flex: 1 } }, "未归属的会话"),
               h("span", { style: small }, view.others.count)),
             view.others.open ? view.others.dirs.map((d) => dirBlock({ agent: { attached: false } }, d)) : null) : null,
-          note ? h("div", { role: "alert", style: { ...small, color: AMBER, padding: "4px 6px" } }, note) : null);
+          note ? h("div", { role: "alert", style: { ...small, color: AMBER, padding: "4px 6px" } }, note) : null,
+          deleting ? h("div", { style: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.45)", display: "flex", alignItems: "center", justifyContent: "center" },
+              onClick: () => { if (!busy) setDeleting(null); } },
+            h("div", { role: "dialog", "aria-modal": "true", "data-rulith-delete-dialog": deleting.id, onClick: (event) => event.stopPropagation(),
+                style: { width: 420, maxWidth: "90vw", padding: 18, borderRadius: 12, background: "var(--color-bg-elevated, #1f2328)", color: "inherit",
+                  border: "1px solid rgba(127,127,127,.35)", boxShadow: "0 12px 32px rgba(0,0,0,.4)", fontSize: 13, lineHeight: 1.6 } },
+              h("div", { style: { fontWeight: 700, fontSize: 15, marginBottom: 8 } }, "删除这个会话？"),
+              deleting.found
+                ? h("div", null,
+                    h("div", null, "会话「" + deleting.title + "」" + (deleting.agentName ? "属于智能体 " + deleting.agentName : "") + "。删除后："),
+                    h("div", null, "· 它在 Rulith 上的 Board 封存，这个会话不能再继续；"),
+                    deleting.goals ? h("div", null, "· 还开着的 " + deleting.goals + " 个目标会以“放弃”结案；") : null,
+                    h("div", null, "· 回执、证明、计费和历史记录都保留，可在 Console 查看。"),
+                    h("div", { style: { marginTop: 6 } }, "这一步不能撤销。"))
+                : h("div", null, "会话「" + deleting.title + "」还没有用过 Rulith，云上没有它的 Board。删除只会在本机把它移出列表。"),
+              h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 } },
+                h("button", { type: "button", style: button, disabled: !!busy, onClick: () => setDeleting(null) }, "取消"),
+                h("button", { type: "button", style: { ...button, borderColor: "#f85149", color: "#f85149" }, disabled: !!busy, onClick: confirmDelete },
+                  busy === "delete" ? "正在删除…" : "删除")))) : null);
       };
     }
 
