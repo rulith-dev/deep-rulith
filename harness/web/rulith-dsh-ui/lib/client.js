@@ -359,7 +359,7 @@ window.__ModuleLoader__.load({
       const v = view || {};
       const tools = Array.isArray(v.tools) ? v.tools : [];
       const requested = v.mode && v.mode.requested;
-      if (!v.directory || !v.agentName || !v.computer || !tools.length || !v.authorizationVersion || !requested)
+      if (!v.directory || !v.accountId || !v.agentName || !v.computer || !tools.length || !v.authorizationVersion || !requested)
         return { error: "读到的打开内容不完整，不能请你确认。请稍后再试。" };
       if (!MODE_MEANING[requested])
         return { error: "这个版本的 Deep Rulith 说明不了要设置的档位（" + requested + "），不能请你确认。请先更新 Deep Rulith。" };
@@ -368,6 +368,7 @@ window.__ModuleLoader__.load({
         title: "把这个文件夹作为项目打开？",
         rows: [
           ["文件夹", v.directory],
+          ["账户", v.accountName || v.accountId],
           ["智能体", v.agentName],
           ["这台电脑", (v.computer.label || "未命名的电脑") + (v.connectionName ? "（本机连接「" + v.connectionName + "」）" : "")],
           ["可以做的事", "在这个文件夹里读文件、写文件、运行命令（包括测试和构建）。"],
@@ -402,7 +403,10 @@ window.__ModuleLoader__.load({
       worker_tool_contract_missing: "这台电脑上的工具和智能体要求的版本不一致。请更新并重新启动 Deep Rulith 后再试。",
       worker_tool_not_direct: "这台电脑上的工具和智能体要求的版本不一致。请更新并重新启动 Deep Rulith 后再试。",
       worker_tool_pin_conflict: "这条本机连接上已经钉着同名工具的另一个版本，需要在 Console 里处理。什么都没有改。",
-      project_unavailable: "现在确认不了项目的状态。请稍后在左侧再打开同一个文件夹，会接着刚才那次打开。",
+      project_unavailable: "现在确认不了项目的状态。之后可以在左侧再次打开这个文件夹：会从当前进度继续，或重新请你确认。",
+      not_signed_in: "这台电脑没有登录 Rulith，或登录已不能使用：先在左下角登录。",
+      manager_signing_out: "这台电脑正在退出 Rulith 登录，现在不能打开项目。",
+      manager_closing: "本机 Rulith 正在关闭，现在不能打开项目。",
       authorization_changed: "要授予的内容在确认之后又变了。请再打开一次，重新确认。",
     };
     function refusalText(reply) {
@@ -430,6 +434,16 @@ window.__ModuleLoader__.load({
       if (v.stage === "mode") return step + "正在把这台电脑上新会话的档位设为「非严格」…";
       return "正在打开项目…";
     }
+    // A fresh request id per confirmation (the page is served from this computer, a secure context).
+    const newProjectRequestId = () => {
+      const c = window.crypto;
+      if (c && c.randomUUID) return c.randomUUID();
+      return "open-" + Array.from(c.getRandomValues(new Uint8Array(16)), (x) => x.toString(16).padStart(2, "0")).join("");
+    };
+    // What is true after the page stops following an opening: the first step records nothing, and later steps advance
+    // only when the state is read again, so opening the folder again continues from where it is, or asks again.
+    const LATER = "之后可以在左侧再次打开这个文件夹：会从当前进度继续，或重新请你确认。";
+    const CHANGED = "要授予的内容在你确认之后变了。请再看一遍。";
     /**
      * The whole flow, with the page's dialog, progress line and timer passed in. Pure apart from `api`: exported for the
      * harness tests. Returns { outcome: "ready", directory } once the project is open (the caller then starts a new
@@ -437,39 +451,52 @@ window.__ModuleLoader__.load({
      * "cancelled", "stopped", "waiting" (still in progress when the owner's patience or the time limit ran out) or
      * "refused", the last three with plain words in `text`.
      *
-     * In progress (recovery "retry") it reads the state again, with short growing pauses. While the first step waits
-     * (nothing has changed yet, so a state read would say "not open") it resends the same request instead: the same
-     * request id continues the same opening. A reply lost on the way back is retried the same way. A terminal state of
-     * this opening (recovery "confirm_again") shows the dialog again, and a new confirmation is a new request id.
+     * In progress (recovery "retry") it reads the state again, with short growing pauses. An open without a definite
+     * answer (its first step waits and records nothing, or its reply was lost) is resent with the same request id only
+     * after a fresh state read still shows the folder not open with the very content the owner confirmed (the same
+     * authorizationVersion). Anything else that read shows is handled as such: in progress is followed, a withdrawal or a
+     * terminal state of the opening (recovery "confirm_again") or other content shows the dialog again, and a new
+     * confirmation is a new request id. So an old confirmation never re-grants what was withdrawn meanwhile.
+     * At most three confirmations, and three failed calls in a row, before it says why it stopped.
      */
-    // A fresh request id per confirmation (the page is served from this computer, a secure context).
-    const newProjectRequestId = () => {
-      const c = window.crypto;
-      if (c && c.randomUUID) return c.randomUUID();
-      return "open-" + Array.from(c.getRandomValues(new Uint8Array(16)), (x) => x.toString(16).padStart(2, "0")).join("");
-    };
     async function openProjectFlow({ api, agentId, directory, ui, newRequestId, maxWaitMs = 300000 }) {
-      const read = () => api("projects/state", { agentId, directory });
+      const read = () => settle(() => api("projects/state", { agentId, directory }));
       const settle = (call) => Promise.resolve().then(call).catch((error) => ({ ok: false, teaching: String((error && error.message) || error) }));
-      let last = read, view = await settle(read);
-      let request = null, note = "", waited = 0, pause = 0, failures = 0, confirmations = 0;
+      const halted = () => !!(ui.stopped && ui.stopped());
+      const STOPPED = { outcome: "stopped", text: "已停止等待。" + LATER };
+      let request = null;     // the opening the owner confirmed last
+      let unsettled = false;  // its open has no definite answer yet: read the state first, then resend it if still allowed
+      let reading = true;     // the last call was a state read
+      let note = "", waited = 0, pause = 0, failures = 0, confirmations = 0;
+      const resend = () => { unsettled = false; reading = false; return settle(() => api("projects/open", request)); };
+      let view = await read();
       for (;;) {
-        if (ui.stopped && ui.stopped()) return { outcome: "stopped", text: "已停止等待。这次打开会在服务端接着进行：稍后在左侧再打开同一个文件夹即可。" };
+        if (halted()) return STOPPED;
         if (!view || view.ok === false) {
           const code = view && view.errorCode;
           if (code === "authorization_changed" && confirmations < 3) {
-            request = null; note = "要授予的内容在你确认之后变了。请再看一遍。";
-            last = read; view = await settle(read); continue;
+            request = null; unsettled = false; note = CHANGED;
+            reading = true; view = await read(); continue;
           }
-          // No answer, or the service could not confirm the state: the same call again (an open keeps its request id).
+          // No answer, or the service could not confirm the state: read the state again. An open that got no answer is
+          // resent only if that read allows it (below).
           if ((!code || code === "project_unavailable") && failures < 3) {
-            failures++; await ui.wait(1000); view = await settle(last); continue;
+            failures++;
+            if (!reading) unsettled = true;
+            await ui.wait(1000);
+            if (halted()) return STOPPED;
+            reading = true; view = await read(); continue;
           }
           return { outcome: "refused", text: refusalText(view) };
         }
         failures = 0;
         if (view.state === "ready") return { outcome: "ready", directory: view.directory || directory };
         if (view.recovery === "console") return { outcome: "refused", text: PROJECT_REFUSALS.project_directory_in_use };
+        if (request && unsettled && view.state === "not_open") {
+          if (view.authorizationVersion === request.authorizationVersion) { view = await resend(); continue; }
+          request = null; note = CHANGED;
+        }
+        unsettled = false;
         if (view.state === "not_open" || view.recovery === "confirm_again") {
           if (confirmations >= 3) return { outcome: "refused", text: "这个文件夹多次没有打开成功：" + againText(view.state) };
           const shown = projectConfirmation(view);
@@ -479,18 +506,17 @@ window.__ModuleLoader__.load({
           confirmations++; note = ""; waited = 0; pause = 0;
           request = { agentId, directory, requestId: newRequestId(), authorizationVersion: view.authorizationVersion,
             expectedAccountId: view.accountId };
-          const sent = request;
           ui.progress("正在打开项目…");
-          last = () => api("projects/open", sent); view = await settle(last); continue;
+          view = await resend(); continue;
         }
-        if (waited >= maxWaitMs) return { outcome: "waiting", text: "还没有打开完成：" + progressText(view)
-          + " 这次打开不会丢，稍后在左侧再打开同一个文件夹，会接着完成（可能需要再确认一次）。" };
+        if (waited >= maxWaitMs) return { outcome: "waiting", text: "还没有打开完成：" + progressText(view) + " " + LATER };
         ui.progress(progressText(view));
+        // The first step waits without recording anything: read the state next, and resend only if it still allows.
+        if (request && view.stage === "configuration") unsettled = true;
         pause = Math.min(pause + 500, 2000);
         await ui.wait(pause); waited += pause;
-        if (request && view.stage === "configuration") { const sent = request; last = () => api("projects/open", sent); }
-        else last = read;
-        view = await settle(last);
+        if (halted()) return STOPPED;
+        reading = true; view = await read();
       }
     }
 

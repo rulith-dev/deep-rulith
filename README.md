@@ -70,11 +70,13 @@ Then, in Deep Rulith:
    also installs the general Worker kit for the paired Agent (into `kit/`).
 3. Open a project (PSC 0.2.24): in the left sidebar, under the Agent, choose 「📂 打开文件夹…」, enter the folder's full
    path and press 打开. A confirmation lists what opening grants, as the account service reports it: the folder, the
-   Agent, this computer, reading, writing and running commands in the folder, the tools used, what the non-strict mode
-   means, that "in this folder" is not operating-system isolation, and how to withdraw it (unlock the project in Console,
-   or revoke this computer's sign-in). After 打开项目 the sidebar shows the progress; when the project is ready a new
+   account, the Agent, this computer, reading, writing and running commands in the folder, the tools used, what the
+   non-strict mode means, that "in this folder" is not operating-system isolation, and how to withdraw it (unlock the
+   project in Console, or revoke this computer's sign-in). After 打开项目 the sidebar shows the progress; when the project is ready a new
    conversation starts in that folder. Existing conversations keep their settings. No Console step is needed; the Agent
-   must hold the official engineering capability (new accounts get it on their Default agent).
+   must hold the official engineering capability (new accounts get it on their Default agent). On Windows a network
+   folder (a share, or a folder on a mapped network drive) cannot be opened: commands cannot use it as their working
+   directory.
 
    This needs a Gateway with the open-project routes (`/local-devices/projects/*`) and a Runtime whose manager forwards
    them (`/manager/projects/*`, the release after `rulith` 0.17.2). With an older Runtime the sidebar says the Runtime

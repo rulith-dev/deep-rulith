@@ -29,23 +29,31 @@ export function sourceAttention(source, consoleUrl) {
 export const projectPlatform = (platform = process.platform) => (platform === 'win32' ? 'windows' : 'posix');
 
 const LOCAL_FILES = { statSync: fs.statSync, realpathSync: fs.realpathSync.native };
+const NETWORK_FOLDER = '这是网络上的文件夹（共享文件夹或映射的网络盘）。在这台电脑上运行命令时不能把它当作工作目录，请选本机磁盘上的文件夹。';
+const NETWORK_PATH = /^[\\/]{2}/;
 
 /**
  * The folder as this computer names it: absolute for its system, an existing directory, and its real path (links,
  * junctions, short names and letter case resolved), so the confirmation shows, and the grant names, the folder the
- * commands will actually run in. The Gateway does the canonical checks (whole drives, shares, nesting); this only refuses
- * what cannot be a folder here, in plain words, before anything is sent.
+ * commands will actually run in. The Gateway does the canonical checks (whole drives, nesting); this only refuses what
+ * cannot be a project folder here, in plain words, before anything is sent.
+ *
+ * On Windows a network folder is refused, typed as a share or reached through a mapped drive (whose real path is the
+ * share): cmd.exe cannot use a network path as its working directory and runs .cmd tools such as npm in C:\Windows
+ * instead, so "commands run in this folder" would not be true.
  */
 export function localFolder(raw, platform = process.platform, files = LOCAL_FILES) {
   const value = typeof raw === 'string' ? raw.trim() : '';
   if (!value) throw refused('folder_invalid', '请填写一个文件夹路径。');
   const windows = platform === 'win32';
-  if (windows ? !/^([A-Za-z]:[\\/]|\\\\[^\\/])/.test(value) : !value.startsWith('/'))
+  if (windows && NETWORK_PATH.test(value)) throw refused('folder_network', NETWORK_FOLDER);
+  if (windows ? !/^[A-Za-z]:[\\/]/.test(value) : !value.startsWith('/'))
     throw refused('folder_invalid', windows ? '请填写完整路径，例如 D:\\work\\project。' : '请填写完整路径，例如 /home/you/project。');
   const resolved = (windows ? path.win32 : path.posix).resolve(value);
   let real = '';
   try { if (files.statSync(resolved).isDirectory()) real = files.realpathSync(resolved); } catch { real = ''; }
   if (!real) throw refused('folder_invalid', '这台电脑上没有这个文件夹：' + resolved);
+  if (windows && NETWORK_PATH.test(real)) throw refused('folder_network', NETWORK_FOLDER);
   return real;
 }
 
@@ -61,7 +69,8 @@ export function projectTarget(state, agentId) {
   const instance = (state.instances ?? []).find((row) => row.agentId === agentId && row.mode === 'local_agent'
     && !row.signedOutAt && row.paired && row.connectionId);
   if (!instance) throw refused('agent_not_set_up', '这个智能体还没有在这台电脑上设置：先在左侧点「在本机设置」。');
-  return { accountId, agentId, connectionId: String(instance.connectionId), instanceId: instance.id };
+  return { accountId, accountName: String(state.device.account?.name ?? ''), agentId, connectionId: String(instance.connectionId),
+    instanceId: instance.id };
 }
 
 /**
@@ -103,9 +112,13 @@ export function projectRoutes({ manager: call, platform = process.platform, file
     const target = projectTarget(await manager('/manager/state'), agentId);
     return { target, directory: localFolder(body?.directory, platform, files) };
   };
+  // The account the authorization belongs to, by the name this computer shows for it, only when the Gateway answered for
+  // that same account.
   const answer = (target, reply) => {
     if (reply?.state === 'ready') onReady(target.instanceId);
-    return projectView(reply);
+    const view = projectView(reply);
+    if (target.accountName && view.accountId === target.accountId) view.accountName = target.accountName;
+    return view;
   };
   return {
     state: async (body) => {
