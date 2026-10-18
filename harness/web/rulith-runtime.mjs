@@ -13,6 +13,7 @@ import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installOutgoingTrim } from './outgoing-trim.mjs';
 import { installProjectContext, readSourceBindings, resolveProject } from './project-source.mjs';
+import { PROJECT_SOURCE, projectRoutes, sourceAttention } from './open-project.mjs';
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
@@ -135,7 +136,12 @@ export async function apply(ctx, config = {}) {
       ? { headers: { 'x-rulith-manager': key } }
       : { method: 'POST', headers: { 'x-rulith-manager': key, 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const reply = await response.json().catch(() => ({}));
-    if (!response.ok || reply.ok === false) throw new Error(reply.teaching || `Rulith answered ${response.status}`);
+    if (!response.ok || reply.ok === false) {
+      // The refusal's code travels with it (the project flow tells the owner what happened from it); only a plain code.
+      const error = Object.assign(new Error(reply.teaching || `Rulith answered ${response.status}`), { status: response.status });
+      if (typeof reply.errorCode === 'string' && /^[a-z_]{1,64}$/.test(reply.errorCode)) error.errorCode = reply.errorCode;
+      throw error;
+    }
     return reply;
   };
 
@@ -433,33 +439,17 @@ export async function apply(ctx, config = {}) {
     if (row) {
       if (row.pendingCall?.needsPerson) items.push({ text: `一次调用需要你处理：${row.pendingCall.label || row.pendingCall.tool}`, url: row.console?.runtime });
       if (row.program?.state === 'rejected') items.push({ text: `程序更新被拒：${row.program.refusal?.message || row.program.refusal?.errorCode || ''}`, url: row.console?.configuration });
-      for (const source of row.sources ?? []) if (source.state !== 'ready') items.push({ text: `Source ${source.name} 未就绪（${source.state}）`,
-        url: row.console?.runtime, source: source.name });
+      for (const source of row.sources ?? []) if (source.state !== 'ready') items.push(sourceAttention(source, row.console?.runtime));
       if (row.key && row.key.state !== 'active') items.push({ text: `本机的 Agent 密钥已失效（${row.key.state}）：打开本机 Rulith 修复`, fix: 'workbench' });
       const here = (row.connections ?? []).filter((connection) => connection.registeredHere && connection.state === 'active');
       if (!here.length) items.push({ text: '这台电脑没有接上本机执行的连接：打开本机 Rulith 修复', fix: 'workbench' });
     }
     return { available: true, gatewayState: all.gatewayState ?? 'unavailable', items, goalsUrl };
   };
-  // D-1008d ②: "choose a folder and start". The selected Agent's local instance proposes the folder for a file Source
-  // through its own setup route (the same no-credential proposal the Runtime wizard sends); the person then confirms it
-  // once in the Agent's Runtime page in Console, which binds the Source and pins the tools this computer reported.
-  const proposeFolder = async (body) => {
-    const agent = agentForRequest({ session: body.session });
-    if (!agent) throw new Error('Choose an Agent first');
-    const source = String(body.source ?? '').trim(), folder = String(body.path ?? '').trim();
-    if (!source || !folder) throw new Error('Name the Source and the folder');
-    if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) throw new Error('That folder does not exist on this computer');
-    const open = new URL((await manager('/manager/instances/open', { instanceId: agent.instanceId, page: '/' })).url);
-    const response = await fetch(`${open.origin}/setup/resources`, { method: 'POST', signal: AbortSignal.timeout(30_000),
-      headers: { 'x-rulith-local': open.searchParams.get('k') ?? '', 'content-type': 'application/json' },
-      body: JSON.stringify({ resources: [{ name: source, access: folder }], services: [] }) });
-    const reply = await response.json().catch(() => ({}));
-    if (!response.ok || reply.ok === false) throw new Error(reply.teaching || `The local Rulith answered ${response.status}`);
-    const all = (await manager('/manager/health').catch(() => ({}))).health ?? {};
-    const row = (all.agents ?? []).find((entry) => entry.agentId === agent.agentId);
-    return { proposed: true, url: row?.console?.runtime ?? '' };
-  };
+  // PSC 0.2.24 (D-1018b batch 3): the owner opens a folder of this computer as a project here, confirming once what it
+  // grants; no Console step. The page drives the flow (confirmation, progress, asking again); these routes only read and
+  // open through the manager's device grant. Once a project is ready its folder appears under the Agent at once.
+  const projects = projectRoutes({ manager, onReady: (instanceId) => sourcesCache.delete(instanceId) });
   // The Agent and the conversation key a session's settings belong to. Only observed mappings: a session that never used
   // Rulith has no Board yet, and asking must not open a connection (same rule as the Board panel).
   const pendingControls = new Map();
@@ -503,7 +493,10 @@ export async function apply(ctx, config = {}) {
           let exists = false;
           try { exists = fs.statSync(source.location).isDirectory(); } catch {}
           if (!exists || directories.some((d) => samePath(d.path) === samePath(source.location))) continue;
-          directories.push({ path: path.resolve(source.location), label: source.name, source: source.name });
+          // A project opened from here is named by the official capability (project, project-<8 hex>): show its folder.
+          directories.push({ path: path.resolve(source.location),
+            label: PROJECT_SOURCE.test(source.name) ? path.basename(path.resolve(source.location)) || source.name : source.name,
+            source: source.name });
         }
         if (!directories.length) {
           const own = path.join(stateDir, 'agents', slug(agent.name));
@@ -524,7 +517,8 @@ export async function apply(ctx, config = {}) {
     return { defaultAgentId: defaultHolder()?.agentId ?? null, agents, assignments: Object.fromEntries(assignments) };
   };
   const routes = {
-    'POST /rulith/api/folder': proposeFolder,
+    'POST /rulith/api/projects/state': (body) => projects.state(body),
+    'POST /rulith/api/projects/open': (body) => projects.open(body),
     'GET /rulith/api/health': (query) => health(query),
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
     'GET /rulith/api/worker': (query) => workerTrace(query),
@@ -636,7 +630,8 @@ export async function apply(ctx, config = {}) {
       try { send(res, 200, { ok: true, ...(await route(req.method === 'POST' ? await readBody(req)
         : { workspace: new URL(req.url, 'http://127.0.0.1').searchParams.get('workspace'),
           session: new URL(req.url, 'http://127.0.0.1').searchParams.get('session') ?? undefined })) }); }
-      catch (error) { send(res, 200, { ok: false, teaching: String(error?.message ?? error).slice(0, 400) }); }
+      catch (error) { send(res, 200, { ok: false, teaching: String(error?.message ?? error).slice(0, 400),
+        ...(typeof error?.errorCode === 'string' ? { errorCode: error.errorCode } : {}) }); }
     },
   }));
   await tick();

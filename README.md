@@ -68,10 +68,19 @@ Then, in Deep Rulith:
 1. Bottom left → Rulith account: sign in, choose the Agent, enable the local Worker.
 2. Set the model (endpoint, model name, key) under 更多设置 (the Rulith workbench), then restart Deep Rulith. The restart
    also installs the general Worker kit for the paired Agent (into `kit/`).
-3. Until projects can be opened from Deep Rulith itself, Console is needed once per project: install the general kit's
-   Capability package (`kits/general/pack/program-v2.json` and `sources-v3.json` in the `rulith` package) on a new Board,
-   bind Source `lab` to the project, pin only the kit's `eng.*` tools and lock the binding. Leave `web.fetch@1` and
-   `web.search@1` unpinned: Deep Rulith uses the host's native read-only `web_fetch`/`web_search` (D-1015c).
+3. Open a project (PSC 0.2.24): in the left sidebar, under the Agent, choose 「📂 打开文件夹…」, enter the folder's full
+   path and press 打开. A confirmation lists what opening grants, as the account service reports it: the folder, the
+   Agent, this computer, reading, writing and running commands in the folder, the tools used, what the non-strict mode
+   means, that "in this folder" is not operating-system isolation, and how to withdraw it (unlock the project in Console,
+   or revoke this computer's sign-in). After 打开项目 the sidebar shows the progress; when the project is ready a new
+   conversation starts in that folder. Existing conversations keep their settings. No Console step is needed; the Agent
+   must hold the official engineering capability (new accounts get it on their Default agent).
+
+   This needs a Gateway with the open-project routes (`/local-devices/projects/*`) and a Runtime whose manager forwards
+   them (`/manager/projects/*`, the release after `rulith` 0.17.2). With an older Runtime the sidebar says the Runtime
+   is too old. Until that Runtime is published, a development checkout can use a local one:
+   `npm install --no-save <path-to-rulith-runtime-checkout>`; once it is published, raise the `rulith` dependency in
+   `package.json` to that version.
 
 ### Developers: a settings file
 

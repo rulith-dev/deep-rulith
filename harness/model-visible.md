@@ -14,8 +14,12 @@ log. Compaction can remove it; the next step restores it. Exactly one of these l
 
 ```text
 This conversation's project is Source "<name>" (<directory>). Use source "<name>" for project files unless the user names another approved project.
-This workspace (<directory>) is not an approved Rulith project; project file Actions cannot reach it until a person adds it in Console.
+This workspace (<directory>) is not an approved Rulith project; project file Actions cannot reach it until the owner opens it as a project in Deep Rulith.
 ```
+
+2026-10-18 (PSC 0.2.24, batch 3): the second line's ending changed from "until a person adds it in Console." to "until
+the owner opens it as a project in Deep Rulith.", because a project is now opened from Deep Rulith's sidebar with one
+confirmation on this computer; nothing else in either line changed.
 
 Unreadable Sources (including a missing selected Agent) or an unavailable conversation cwd clear the project's context
 instead of claiming the workspace is unapproved, and log a visible `[rulith project]` diagnostic. Approved Source reads

@@ -178,8 +178,6 @@ window.__ModuleLoader__.load({
       const [worker, refreshWorker] = usePoll("worker?session=" + encodeURIComponent(sessionId), 6000);
       const [health, refreshHealth] = usePoll("health?session=" + encodeURIComponent(sessionId), 60000);
       const [trace, setTrace] = useState(true);
-      const [folder, setFolder] = useState("");
-      const [folderNote, setFolderNote] = useState("");
       const reload = () => { refresh(); refreshWorker(); refreshHealth(); refreshProject(); };
       if (!data) return h("div", { style: { padding: 12 } }, "正在读取 Rulith…");
       if (!data.ok) return h("div", { style: { padding: 12, color: AMBER } }, data.teaching || "读不到 Rulith");
@@ -219,17 +217,6 @@ window.__ModuleLoader__.load({
           const text = "验收待签字／待确认：" + show(goal.label || goal.goal) + " — 在 Console 的目标页签字或验收";
           return goalsUrl ? { text, url: goalsUrl } : { text: text + "（未设置 consoleUrl：这里只能打开本机 Rulith）", fix: "workbench" };
         })];
-      const proposeFolder = async (source) => {
-        setFolderNote("");
-        try {
-          const reply = await api("folder", { source, path: folder, session: sessionId });
-          if (!reply.ok) { setFolderNote(reply.teaching || "没有提交成功"); return; }
-          setFolderNote("已提交：在 Console 的 Runtime 页确认一次，就会绑定这个文件夹。");
-          if (reply.url) window.open(reply.url, "_blank", "noopener");
-          refreshHealth();
-        } catch (error) { setFolderNote(String(error)); }
-      };
-      const unbound = needs.filter((item) => item.source);
       let workerBody;
       if (!worker) workerBody = none("正在读取本机执行…");
       else if (!worker.ok) workerBody = h("div", { style: { color: AMBER, fontSize: 12 } }, "读不到本机执行：" + (worker.teaching || ""));
@@ -254,13 +241,6 @@ window.__ModuleLoader__.load({
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
           h("b", null, "Rulith · " + (data.agentName || "")), h("button", { style: button, onClick: reload }, "刷新")),
         h("div", { style: { ...small, marginBottom: 10 } }, "最近收到 Board：" + new Date(data.seenAt).toLocaleString()),
-        unbound.length ? block("工作文件夹", "", h("div", null,
-          h("div", { style: { fontSize: 12, marginBottom: 4 } }, "选一个这台电脑上的文件夹给 " + unbound.map((item) => item.source).join("、") + "，然后在 Console 确认一次。"),
-          h("div", { style: { display: "flex", gap: 6 } },
-            h("input", { value: folder, onChange: (event) => setFolder(event.target.value), placeholder: "例如 D:\Work\project",
-              style: { flex: 1, font: "inherit", fontSize: 12, padding: "2px 6px" } }),
-            h("button", { style: { ...button, padding: "1px 8px", fontSize: 11 }, disabled: !folder.trim(), onClick: () => proposeFolder(unbound[0].source) }, "使用这个文件夹")),
-          folderNote ? h("div", { style: { ...small, marginTop: 4 } }, folderNote) : null)) : null,
         needs.length ? block("需要处理", needs.length + " 项", h("div", null, needs.map((item, i) => h("div", { key: i, role: "alert",
           style: { display: "flex", gap: 8, alignItems: "baseline", padding: "2px 0", fontSize: 12, color: LEVEL.error } },
           h("span", { style: { flex: 1 } }, item.text),
@@ -360,6 +340,160 @@ window.__ModuleLoader__.load({
     }
 
 
+    // ---- Opening a folder as a project (PSC 0.2.24 SYS-LOCAL-01, D-1018b batch 3). The owner picks a folder under an
+    // Agent, reads what opening it grants, confirms once, and a new conversation starts in it when it is ready. What is
+    // granted (folder, Agent, computer, tools, mode) is the Gateway's answer, shown as it is; the wording is ours.
+    const TOOL_WORDS = { read: "读文件", read_image: "读图片", list: "列出文件", glob: "按名称找文件", search: "搜索文件内容",
+      tree_state: "查看文件夹的改动", write_file: "写文件", patch_file: "修改文件", apply_patch: "按补丁修改文件", run: "运行命令",
+      test: "运行测试", job_start: "在后台运行命令", job_poll: "查看后台命令", job_stop: "停止后台命令", acceptance: "运行验收检查" };
+    const toolText = (id) => {
+      const words = TOOL_WORDS[String(id || "").replace(/^eng\./, "").replace(/@\d+$/, "")];
+      return words ? words + "（" + id + "）" : String(id || "");
+    };
+    // What each mode the Gateway may request means for the owner. A mode this page cannot explain is not offered.
+    const MODE_MEANING = {
+      non_strict: "这台电脑上之后新开的会话使用「非严格」档：模型给出的命令和参数不再需要事先有依据，就会执行；任务算不算完成，仍然只由你签字的验收合同认定。",
+    };
+    /** The confirmation for one state reply: every item PSC 0.2.24 requires, or why it cannot be shown. Pure. */
+    function projectConfirmation(view) {
+      const v = view || {};
+      const tools = Array.isArray(v.tools) ? v.tools : [];
+      const requested = v.mode && v.mode.requested;
+      if (!v.directory || !v.agentName || !v.computer || !tools.length || !v.authorizationVersion || !requested)
+        return { error: "读到的打开内容不完整，不能请你确认。请稍后再试。" };
+      if (!MODE_MEANING[requested])
+        return { error: "这个版本的 Deep Rulith 说明不了要设置的档位（" + requested + "），不能请你确认。请先更新 Deep Rulith。" };
+      const capability = v.capability && v.capability.id ? "。这些工具来自这个智能体已装的官方编程能力 " + v.capability.id + (v.capability.version ? " " + v.capability.version : "") : "";
+      return {
+        title: "把这个文件夹作为项目打开？",
+        rows: [
+          ["文件夹", v.directory],
+          ["智能体", v.agentName],
+          ["这台电脑", (v.computer.label || "未命名的电脑") + (v.connectionName ? "（本机连接「" + v.connectionName + "」）" : "")],
+          ["可以做的事", "在这个文件夹里读文件、写文件、运行命令（包括测试和构建）。"],
+          ["所用工具", tools.map((tool) => toolText(tool.id)).join("、") + capability + "。"],
+          ["档位", MODE_MEANING[requested]],
+          ["请注意", "「在这个文件夹里」不是操作系统级的隔离：运行的命令，以及它再启动的其他软件，仍然可能读写这个文件夹以外的文件。只打开你愿意让智能体在里面写文件、运行命令的文件夹。"],
+          ["怎么撤销", "以后要收回，在 Console 里解除这个项目的锁定，或者停用这台电脑的登录。"],
+        ],
+        footer: "已有的会话不受影响。打开完成后，会在这个文件夹里开一个新会话。",
+        accept: "打开项目", cancel: "取消",
+      };
+    }
+    // Plain words for every refusal the open-project routes name; anything else shows the service's own words.
+    const PROJECT_REFUSALS = {
+      not_authorized: "这台电脑的登录没有被授权使用这个智能体。",
+      account_changed: "这台电脑现在登录的账户和刚才显示的不一样。请刷新后再打开。",
+      connection_not_of_this_device: "这个智能体的本机连接不是这台电脑设置的。请在左侧对这个智能体重新「在本机设置」。",
+      connection_not_found: "这个智能体在这台电脑上没有可用的本机连接。请在左侧对它「在本机设置」。",
+      agent_not_found: "这个智能体现在不可用。",
+      client_authority_refused: "请求里带了只能由服务端决定的内容，已被拒绝。什么都没有改。",
+      device_revoked: "这台电脑的登录已经失效。请在左下角重新登录。",
+      device_expired: "这台电脑的登录已经过期。请在左下角重新登录。",
+      device_unauthenticated: "这台电脑的登录已经失效。请在左下角重新登录。",
+      unauthenticated: "这台电脑的登录已经失效。请在左下角重新登录。",
+      official_capability_not_installed: "这个智能体没有装官方编程能力，不能打开项目。",
+      official_capability_invalid: "这个智能体装的官方编程能力不完整，不能打开项目。",
+      project_directory_in_use: "这个文件夹在这台电脑上已经被另一项授权占用，需要在 Console 里处理。什么都没有改。",
+      project_nested: "这个文件夹在一个已打开的项目里面，或者包含一个已打开的项目。请选一个不和已打开项目重叠的文件夹。",
+      platform_mismatch: "这个路径的写法和这台电脑上已打开的文件夹不一致。",
+      worker_tools_unavailable: "这台电脑的本机执行还没有报告要用的工具。请确认左下角「使用这台电脑的工具和文件」已打开、本机执行在线，再试一次。",
+      worker_tools_mismatch: "这台电脑上的工具和智能体要求的版本不一致。请更新并重新启动 Deep Rulith 后再试。",
+      worker_tool_contract_missing: "这台电脑上的工具和智能体要求的版本不一致。请更新并重新启动 Deep Rulith 后再试。",
+      worker_tool_not_direct: "这台电脑上的工具和智能体要求的版本不一致。请更新并重新启动 Deep Rulith 后再试。",
+      worker_tool_pin_conflict: "这条本机连接上已经钉着同名工具的另一个版本，需要在 Console 里处理。什么都没有改。",
+      project_unavailable: "现在确认不了项目的状态。请稍后在左侧再打开同一个文件夹，会接着刚才那次打开。",
+      authorization_changed: "要授予的内容在确认之后又变了。请再打开一次，重新确认。",
+    };
+    function refusalText(reply) {
+      const code = reply && reply.errorCode;
+      if (code && PROJECT_REFUSALS[code]) return PROJECT_REFUSALS[code];
+      const said = String((reply && reply.teaching) || "").trim();
+      if (code === "bad_command") return "这个文件夹不能作为项目打开" + (said ? "：" + said : "。");
+      return "没有打开项目" + (said ? "：" + said : "。");
+    }
+    // Why the dialog is shown again: this opening reached a state that retrying does not change (409, confirm_again).
+    const AGAIN_WORDS = {
+      mode_changed: "打开之后，这台电脑的档位又被改回去了（可能是在 Console 里改的）。重试不会替你再放宽；要继续，请再确认一次。",
+      opened_elsewhere: "这个文件夹的打开不是在这台电脑上确认的。要在这台电脑上使用，请再确认一次。",
+      mode_refused: "把档位设为「非严格」多次没有成功。要继续，请再确认一次。",
+      revoked: "这个文件夹的项目授权已经收回。要再次授权，请再确认一次。",
+    };
+    const againText = (state) => AGAIN_WORDS[state] || "这次打开没有完成。要继续，请再确认一次。";
+    function progressText(view) {
+      const v = view || {};
+      const step = { configuration: "（第 1 步，共 3 步）", program: "（第 2 步，共 3 步）", mode: "（第 3 步，共 3 步）" }[v.stage] || "";
+      if (v.waitingFor === "agent_call_pending") return step + "智能体手上还有一次调用没有结束，结束后会接着打开…";
+      if (v.state === "mode_refused") return step + "设置档位没有成功，正在重试…";
+      if (v.stage === "configuration") return step + "正在记下项目文件夹和要用的工具…";
+      if (v.stage === "program") return step + "正在等新的设置生效…";
+      if (v.stage === "mode") return step + "正在把这台电脑上新会话的档位设为「非严格」…";
+      return "正在打开项目…";
+    }
+    /**
+     * The whole flow, with the page's dialog, progress line and timer passed in. Pure apart from `api`: exported for the
+     * harness tests. Returns { outcome: "ready", directory } once the project is open (the caller then starts a new
+     * conversation in it, after the program took effect: a conversation's Board freezes its program when it is made),
+     * "cancelled", "stopped", "waiting" (still in progress when the owner's patience or the time limit ran out) or
+     * "refused", the last three with plain words in `text`.
+     *
+     * In progress (recovery "retry") it reads the state again, with short growing pauses. While the first step waits
+     * (nothing has changed yet, so a state read would say "not open") it resends the same request instead: the same
+     * request id continues the same opening. A reply lost on the way back is retried the same way. A terminal state of
+     * this opening (recovery "confirm_again") shows the dialog again, and a new confirmation is a new request id.
+     */
+    // A fresh request id per confirmation (the page is served from this computer, a secure context).
+    const newProjectRequestId = () => {
+      const c = window.crypto;
+      if (c && c.randomUUID) return c.randomUUID();
+      return "open-" + Array.from(c.getRandomValues(new Uint8Array(16)), (x) => x.toString(16).padStart(2, "0")).join("");
+    };
+    async function openProjectFlow({ api, agentId, directory, ui, newRequestId, maxWaitMs = 300000 }) {
+      const read = () => api("projects/state", { agentId, directory });
+      const settle = (call) => Promise.resolve().then(call).catch((error) => ({ ok: false, teaching: String((error && error.message) || error) }));
+      let last = read, view = await settle(read);
+      let request = null, note = "", waited = 0, pause = 0, failures = 0, confirmations = 0;
+      for (;;) {
+        if (ui.stopped && ui.stopped()) return { outcome: "stopped", text: "已停止等待。这次打开会在服务端接着进行：稍后在左侧再打开同一个文件夹即可。" };
+        if (!view || view.ok === false) {
+          const code = view && view.errorCode;
+          if (code === "authorization_changed" && confirmations < 3) {
+            request = null; note = "要授予的内容在你确认之后变了。请再看一遍。";
+            last = read; view = await settle(read); continue;
+          }
+          // No answer, or the service could not confirm the state: the same call again (an open keeps its request id).
+          if ((!code || code === "project_unavailable") && failures < 3) {
+            failures++; await ui.wait(1000); view = await settle(last); continue;
+          }
+          return { outcome: "refused", text: refusalText(view) };
+        }
+        failures = 0;
+        if (view.state === "ready") return { outcome: "ready", directory: view.directory || directory };
+        if (view.recovery === "console") return { outcome: "refused", text: PROJECT_REFUSALS.project_directory_in_use };
+        if (view.state === "not_open" || view.recovery === "confirm_again") {
+          if (confirmations >= 3) return { outcome: "refused", text: "这个文件夹多次没有打开成功：" + againText(view.state) };
+          const shown = projectConfirmation(view);
+          if (shown.error) return { outcome: "refused", text: shown.error };
+          const accepted = await ui.confirm(view, note || (view.recovery === "confirm_again" ? againText(view.state) : ""));
+          if (!accepted) return { outcome: "cancelled" };
+          confirmations++; note = ""; waited = 0; pause = 0;
+          request = { agentId, directory, requestId: newRequestId(), authorizationVersion: view.authorizationVersion,
+            expectedAccountId: view.accountId };
+          const sent = request;
+          ui.progress("正在打开项目…");
+          last = () => api("projects/open", sent); view = await settle(last); continue;
+        }
+        if (waited >= maxWaitMs) return { outcome: "waiting", text: "还没有打开完成：" + progressText(view)
+          + " 这次打开不会丢，稍后在左侧再打开同一个文件夹，会接着完成（可能需要再确认一次）。" };
+        ui.progress(progressText(view));
+        pause = Math.min(pause + 500, 2000);
+        await ui.wait(pause); waited += pause;
+        if (request && view.stage === "configuration") { const sent = request; last = () => api("projects/open", sent); }
+        else last = read;
+        view = await settle(last);
+      }
+    }
+
     // ---- Sidebar: Agent -> directory -> conversation (owner 2026-10-17). Registered at a lower priority than dsh's own
     // workspace browser, which shadows its view; dsh's navigation service (uiWorkspace) still opens, starts and archives
     // conversations, and dsh's session and workspace stores are read as they are. Directories are the Agent's file
@@ -456,6 +590,11 @@ window.__ModuleLoader__.load({
         const [busy, setBusy] = useState("");
         const [note, setNote] = useState("");
         const [deleting, setDeleting] = useState(null); // { id, title, agentName, found, goals }
+        const [folderFor, setFolderFor] = useState(null);     // the Agent whose "open a folder" input is shown
+        const [folderPath, setFolderPath] = useState("");
+        const [asking, setAsking] = useState(null);           // { view, note, answer } while the confirmation is open
+        const [progress, setProgress] = useState("");
+        const stop = React.useRef(false);
         if (!wide) return h("button", { type: "button", title: "展开智能体列表", onClick: expandSidebar,
           style: { ...button, display: "block", margin: "8px auto" } }, "☰");
         const current = selection && selection.sessionId;
@@ -492,12 +631,10 @@ window.__ModuleLoader__.load({
           } catch (error) { setNote(String(error && error.message || error)); }
           finally { setBusy(""); }
         };
-        const newSession = async (agent, dir) => {
-          if (busy) return;
-          setBusy(agent.agentId); setNote("");
+        const startSession = async (agent, directory) => {
           try {
-            let ws = ((services.workspaces.list.getSnapshot() || {}).items || []).find((item) => samePath(item.path) === samePath(dir.path));
-            if (!ws) { const made = await services.workspaces.create({ path: dir.path }); ws = pick(pick(made, "value"), "workspace"); }
+            let ws = ((services.workspaces.list.getSnapshot() || {}).items || []).find((item) => samePath(item.path) === samePath(directory));
+            if (!ws) { const made = await services.workspaces.create({ path: directory }); ws = pick(pick(made, "value"), "workspace"); }
             const created = await services.sessions.create({ workspaceId: ws.workspaceId });
             const id = typeof created === "string" ? created : pick(pick(created, "value"), "sessionId");
             const reply = await api("sessions/assign", { session: id, agentId: agent.agentId });
@@ -505,8 +642,29 @@ window.__ModuleLoader__.load({
             open(id);
             refreshTree();
           } catch (error) { setNote("新会话没有建成：" + String(error && error.message || error)); }
-          finally { setBusy(""); }
         };
+        const newSession = async (agent, dir) => {
+          if (busy) return;
+          setBusy(agent.agentId); setNote("");
+          try { await startSession(agent, dir.path); } finally { setBusy(""); }
+        };
+        // PSC 0.2.24: open a folder as a project, then start a conversation in it once it is ready (never before: the
+        // conversation's Board freezes the Agent's settings when it is made).
+        const openFolder = async (agent, directory) => {
+          if (busy || !String(directory || "").trim()) return;
+          setBusy("project:" + agent.agentId); setNote(""); stop.current = false;
+          try {
+            const result = await openProjectFlow({ api, agentId: agent.agentId, directory: String(directory).trim(),
+              newRequestId: newProjectRequestId,
+              ui: { confirm: (view, why) => new Promise((answer) => setAsking({ view, note: why, answer })),
+                progress: setProgress, wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), stopped: () => stop.current } });
+            setProgress("");
+            if (result.outcome === "ready") { setFolderFor(null); setFolderPath(""); await startSession(agent, result.directory); }
+            else if (result.outcome !== "cancelled") setNote(result.text);
+          } catch (error) { setNote("没有打开项目：" + String(error && error.message || error)); }
+          finally { setBusy(""); setProgress(""); setAsking(null); }
+        };
+        const answerAsking = (yes) => { const pending = asking; setAsking(null); if (pending) pending.answer(yes); };
         const setUp = async (agent) => {
           setBusy(agent.agentId); setNote("");
           try { const reply = await api("select", { agentId: agent.agentId, newConnection: true }); if (!reply.ok) setNote(reply.teaching || "没有设置成功"); refreshTree(); }
@@ -559,8 +717,25 @@ window.__ModuleLoader__.load({
               entry.count ? h("span", { style: { ...small, fontWeight: 400 } }, entry.count) : null,
               !a.attached ? h("button", { type: "button", disabled: !!busy, style: { ...button, padding: "0 6px", fontSize: 11 }, onClick: () => setUp(a) }, "在本机设置")
                 : firstDir(entry) ? h("button", { type: "button", title: "在这个智能体下开新会话", disabled: !!busy, style: tiny, onClick: () => newSession(a, firstDir(entry)) }, "+") : null),
-            entry.open && a.attached ? h("div", null, entry.dirs.map((d) => dirBlock(entry, d))) : null);
+            entry.open && a.attached ? h("div", null, entry.dirs.map((d) => dirBlock(entry, d)), openFolderRow(a)) : null);
         };
+        // The directory level's last row: open another folder of this computer as one of this Agent's projects.
+        const openFolderRow = (a) => folderFor !== a.agentId
+          ? h("button", { type: "button", "data-rulith-open-folder": a.agentId, disabled: !!busy, title: "把这台电脑上的一个文件夹作为这个智能体的项目打开",
+              style: { ...tiny, display: "block", padding: "2px 6px 2px 18px", fontSize: 12.5, textAlign: "left" },
+              onClick: () => { setFolderFor(a.agentId); setFolderPath(""); setNote(""); } }, "📂 打开文件夹…")
+          : h("div", { "data-rulith-open-folder": a.agentId, style: { padding: "2px 6px 2px 18px" } },
+              h("div", { style: { display: "flex", gap: 4, alignItems: "center" } },
+                h("input", { value: folderPath, autoFocus: true, placeholder: "文件夹的完整路径，例如 D:\\work\\game 或 /home/you/game",
+                  disabled: !!busy, onChange: (event) => setFolderPath(event.target.value),
+                  onKeyDown: (event) => { if (event.key === "Enter") openFolder(a, folderPath); else if (event.key === "Escape" && !busy) setFolderFor(null); },
+                  style: { flex: 1, minWidth: 0, padding: "2px 6px", borderRadius: 5, border: "1px solid rgba(127,127,127,.35)", background: "transparent", color: "inherit", font: "inherit", fontSize: 12 } }),
+                h("button", { type: "button", style: { ...button, padding: "1px 8px", fontSize: 11 }, disabled: !!busy || !folderPath.trim(), onClick: () => openFolder(a, folderPath) }, "打开"),
+                h("button", { type: "button", title: "取消", style: tiny, disabled: !!busy, onClick: () => setFolderFor(null) }, "×")),
+              progress ? h("div", { role: "status", style: { ...small, display: "flex", gap: 6, alignItems: "baseline", marginTop: 4 } },
+                h("span", { style: { flex: 1 } }, progress),
+                h("button", { type: "button", style: { ...tiny, fontSize: 11 }, onClick: () => { stop.current = true; } }, "停止等待")) : null);
+        const confirmation = asking ? projectConfirmation(asking.view) : null;
         return h("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, flex: 1, overflow: "auto", padding: "4px 6px" }, "data-rulith-tree": "" },
           h("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px" } },
             h("span", { style: { ...section, margin: 0, flex: 1 } }, "智能体"),
@@ -594,7 +769,22 @@ window.__ModuleLoader__.load({
               h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 } },
                 h("button", { type: "button", style: button, disabled: !!busy, onClick: () => setDeleting(null) }, "取消"),
                 h("button", { type: "button", style: { ...button, borderColor: "#f85149", color: "#f85149" }, disabled: !!busy, onClick: confirmDelete },
-                  busy === "delete" ? "正在删除…" : "删除")))) : null);
+                  busy === "delete" ? "正在删除…" : "删除")))) : null,
+          // PSC 0.2.24: the one confirmation of opening a folder as a project. Its content is the Gateway's answer.
+          confirmation && !confirmation.error ? h("div", { style: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.45)", display: "flex", alignItems: "center", justifyContent: "center" },
+              onClick: () => answerAsking(false) },
+            h("div", { role: "dialog", "aria-modal": "true", "data-rulith-project-dialog": "", onClick: (event) => event.stopPropagation(),
+                style: { width: 520, maxWidth: "92vw", maxHeight: "86vh", overflow: "auto", padding: 18, borderRadius: 12, background: "var(--color-bg-elevated, #1f2328)", color: "inherit",
+                  border: "1px solid rgba(127,127,127,.35)", boxShadow: "0 12px 32px rgba(0,0,0,.4)", fontSize: 13, lineHeight: 1.6 } },
+              h("div", { style: { fontWeight: 700, fontSize: 15, marginBottom: 8 } }, confirmation.title),
+              asking.note ? h("div", { role: "alert", style: { color: AMBER, marginBottom: 8 } }, asking.note) : null,
+              confirmation.rows.map(([label, value]) => h("div", { key: label, style: { display: "flex", gap: 10, padding: "3px 0" } },
+                h("div", { style: { flex: "none", width: 96, opacity: 0.7 } }, label),
+                h("div", { style: { flex: 1, wordBreak: "break-word" } }, value))),
+              h("div", { style: { marginTop: 8, opacity: 0.8 } }, confirmation.footer),
+              h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 } },
+                h("button", { type: "button", style: button, onClick: () => answerAsking(false) }, confirmation.cancel),
+                h("button", { type: "button", style: { ...button, borderColor: GREEN, color: GREEN }, onClick: () => answerAsking(true) }, confirmation.accept)))) : null);
       };
     }
 
@@ -648,6 +838,10 @@ window.__ModuleLoader__.load({
     }
     exports.apply = apply;
     exports.buildTree = buildTree;
+    exports.projectConfirmation = projectConfirmation;
+    exports.openProjectFlow = openProjectFlow;
+    exports.refusalText = refusalText;
+    exports.progressText = progressText;
     exports.inject = ["slots", "sidebarRightTabs", "sidebarRight"];
     return module.exports;
   }
