@@ -1,18 +1,24 @@
-// Deep Rulith launcher. Reads this computer's settings file (paths only), takes the model from Rulith's own model settings
-// (the manager home the owner set up), and starts dsh's web profile "rulith" with the Deep Rulith overlay.
-// The model key travels only in the child's environment; it is never printed or written anywhere.
+#!/usr/bin/env node
+// Deep Rulith launcher, and the installed command. Takes its settings from this computer's settings file (paths only) or,
+// with none, derives them from the app home (app-home.mjs); takes the model from Rulith's own model settings (the manager
+// home), and starts dsh's web profile "rulith" with the Deep Rulith overlay. The model key travels only in the child's
+// environment; it is never printed or written anywhere.
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { conversationBoards, contextEnv, contextLines, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
+import { holdAppHome, launcherSettings } from './app-home.mjs';
 import { managerListening, refreshGeneralKits } from '../kit-install.mjs';
 import { webSearchKey } from '../web-tools.mjs';
 
-const settingsFile = process.env.DEEP_RULITH_SETTINGS || process.argv[2];
-if (!settingsFile) throw new Error('usage: node start-deep-rulith.mjs <deep-rulith.json> [dsh web flags]');
-const s = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+// `args` are the launcher's own arguments: `--init` first, or dsh web flags (--no-open, --port ...).
+const { settings: s, args, home } = await launcherSettings();
+if (home) {
+  await holdAppHome(home).catch((error) => { console.error(error.message); process.exit(1); });
+  console.log(`Deep Rulith keeps its files in ${home}.`);
+}
 // The model settings live in a Rulith manager home: this one's, or another the settings name (modelHome).
 const modelFile = path.join(s.modelHome ?? s.managerHome, 'model-defaults.json');
 const defaults = fs.existsSync(modelFile) ? JSON.parse(fs.readFileSync(modelFile, 'utf8')).defaults ?? [] : [];
@@ -156,32 +162,37 @@ function writeModelRoute() {
   writeReviewerRoute(YAML, doc);
 }
 
-// --init creates the profile once from dsh's shipped web template (launcher flags must precede app flags such as --port),
-// Every launch refreshes the product's browser plugin (a copy; no links), so upgrades do not keep the old UI.
-const init = process.argv[3] === '--init';
+// The profile is created once from dsh's shipped web template: by `--init`, or by the first start without one (launcher
+// flags must precede app flags such as --port). Every launch refreshes the product's browser plugin (a copy; no links),
+// so upgrades do not keep the old UI.
+const init = args[0] === '--init';
 const syncBrowserPlugin = () => {
   const target = path.join(s.dshHome, 'profiles', profile, 'node_modules', 'rulith-dsh-ui');
   fs.cpSync(fileURLToPath(new URL('./rulith-dsh-ui', import.meta.url)), target, { recursive: true });
 };
-// The kit refresh covers this launcher's own Agent (agentName) when the settings name one. A manager already listening on
-// the port belongs to another launcher sharing this manager home; its Workers run on the files a refresh rewrites, so the
-// refresh waits for a start that brings the manager up itself.
-if (!init) {
-  if (await managerListening(Number(s.managerPort ?? 7790)))
-    console.error('Deep Rulith: a Rulith manager already runs on this port (another launcher); general kit refresh skipped.');
-  else refreshGeneralKits(s.managerHome, { agent: s.agentName });
-  syncBrowserPlugin(); writeModelRoute();
+function createProfile() {
+  const made = spawnSync(process.execPath, [s.dshBin, '--profile', profile, '--from-default-profile', 'web', '--patch', overlay, '--dump-config'],
+    { cwd: s.cwd, env, stdio: ['ignore', 'ignore', 'inherit'] });
+  if (made.status !== 0) return made.status ?? 1;
+  syncBrowserPlugin();
+  writeModelRoute();
+  console.log(`Deep Rulith profile "${profile}" created in ${s.dshHome}.`);
+  return 0;
 }
-const args = init
-  ? [s.dshBin, '--profile', profile, '--from-default-profile', 'web', '--patch', overlay, '--dump-config']
-  : [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...process.argv.slice(3)];
-const child = spawn(process.execPath, args, { cwd: s.cwd, env, stdio: init ? ['ignore', 'ignore', 'inherit'] : 'inherit' });
-child.on('exit', (code) => {
-  if (init && code === 0) {
-    syncBrowserPlugin();
-    writeModelRoute();
-    console.log(`Deep Rulith profile "${profile}" created in ${s.dshHome}.`);
-  }
-  process.exit(code ?? 0);
-});
+if (init) process.exit(createProfile());
+if (!fs.existsSync(path.join(s.dshHome, 'profiles', profile, 'package.json'))) {
+  const code = createProfile();
+  if (code !== 0) process.exit(code);
+}
+// The kit refresh covers this launcher's own Agent (agentName) when the settings name one, else every paired Agent; an Agent
+// whose Worker has no kit home yet gets `kitHome` when the settings have one (the app home's kit). A manager already
+// listening on the port belongs to another launcher sharing this manager home; its Workers run on the files a refresh
+// rewrites, so the refresh waits for a start that brings the manager up itself.
+if (await managerListening(Number(s.managerPort ?? 7790)))
+  console.error('Deep Rulith: a Rulith manager already runs on this port (another launcher); general kit refresh skipped.');
+else refreshGeneralKits(s.managerHome, { agent: s.agentName, kitHome: s.kitHome });
+syncBrowserPlugin(); writeModelRoute();
+const child = spawn(process.execPath, [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...args],
+  { cwd: s.cwd, env, stdio: 'inherit' });
+child.on('exit', (code) => process.exit(code ?? 0));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));

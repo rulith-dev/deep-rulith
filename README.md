@@ -39,38 +39,56 @@ Deep Rulith uses the general Worker kit shipped by the Rulith Runtime in `kits/g
   to public http(s) URLs (local, private and link-local addresses are refused). Their results leave nothing on the Board.
 - dsh telemetry, feedback, session upload and the DeepSeek account integration are disabled by the overlay.
 
-## Setup (manual, alpha)
+## Install and start
 
-Requires the Node.js version dsh requires.
+Requires Node.js 22.19 or later (tested with 24).
 
-1. Run `npm install` in this repository (it installs the Rulith Runtime). Create a manager home
-   directory and a key file holding a random key of at least 16 letters and digits; Deep Rulith
-   starts the Runtime manager with that home and key.
-2. In Rulith Console create an Agent for this project. In the Runtime checkout run
-   `node kits/general/pack/build-pack.mjs`; publish and install `kits/general/pack/program-v2.json`
-   and `sources-v2.json` on a new Board (Source `lab`). These are version 2; the legacy v1
-   package has no acceptance bridge and cannot be hot-upgraded or installed beside v2.
-3. Install dsh in its own folder: `npm install @deepseek-ai/dsh@0.2.1-alpha.1`.
-4. Copy [`deep-rulith.example.json`](deep-rulith.example.json) and fill in the paths.
-5. Copy `deep-rulith.example.json` to `deep-rulith.json` in this folder (ignored by git) and fill in the paths. Create the dsh profile once: `Deep-Rulith.cmd --init` (or `node harness/web/start-deep-rulith.mjs deep-rulith.json --init`).
-6. Start: double-click `Deep-Rulith.cmd` (or `node harness/web/start-deep-rulith.mjs deep-rulith.json`) and open the printed URL.
-7. Bottom left → Rulith account: sign in, choose the Agent, enable the local Worker. Set the model
-   (endpoint, model name, key) under 更多设置 (the Rulith workbench), then restart Deep Rulith.
-   Install the shipped kit once with `rulith kit install general --agent <name> --kit-home <dir> --manager-home <dir>`
-   (or `node <Runtime checkout>/local/rulith-local.mjs kit install general` with the same flags).
-   Use the existing external `ENG_KIT_HOME`: its `settings.json`, legacy `specs/test.json` and
-   measurement specs remain compatible. Then in Console bind Source `lab` to the project,
-   pin only the general kit's `eng.*` tools and lock the binding. Leave `web.fetch@1` and `web.search@1`
-   unpinned: Deep Rulith uses the host's native read-only `web_fetch`/`web_search` (D-1015c).
-   Restart Deep Rulith/its Worker after installing.
+```bash
+npm install --global deep-rulith
+deep-rulith
+```
+
+Deep Rulith opens in your browser (`deep-rulith --no-open` only prints the address). Stop it with Ctrl+C in
+its terminal. The folder you start it in is the default workspace of new conversations; that is not a grant of access.
+
+Everything it keeps on this computer is in one folder, `~/.rulith/app` (set `RULITH_APP_HOME` to use another; one Deep
+Rulith runs per folder):
+
+| Path | What it is |
+| --- | --- |
+| `manager/` | The Rulith Runtime manager directory: this computer's sign-in, its Agents and their local Workers. |
+| `manager.key` | A random key for the local manager, made on the first start (owner-only file permissions where the system has them). Never printed. |
+| `dsh/` | dsh's home, with the Deep Rulith profile (created on the first start). |
+| `kit/` | The general Worker kit's home: its optional `settings.json` and pinned specs. |
+
+Ports: the manager prefers 7790 and the browser page 3080; when one is busy another free port is used.
+
+Then, in Deep Rulith:
+
+1. Bottom left → Rulith account: sign in, choose the Agent, enable the local Worker.
+2. Set the model (endpoint, model name, key) under 更多设置 (the Rulith workbench), then restart Deep Rulith. The restart
+   also installs the general Worker kit for the paired Agent (into `kit/`).
+3. Until projects can be opened from Deep Rulith itself, Console is needed once per project: install the general kit's
+   Capability package (`kits/general/pack/program-v2.json` and `sources-v3.json` in the `rulith` package) on a new Board,
+   bind Source `lab` to the project, pin only the kit's `eng.*` tools and lock the binding. Leave `web.fetch@1` and
+   `web.search@1` unpinned: Deep Rulith uses the host's native read-only `web_fetch`/`web_search` (D-1015c).
+
+### Developers: a settings file
+
+From a checkout (`npm install`, which also installs dsh), `node harness/web/start-deep-rulith.mjs <settings.json> [dsh web flags]`
+(or `Deep-Rulith.cmd` with `deep-rulith.json` beside it, ignored by git) starts the same launcher with the settings in the
+file instead of the derived ones: see [`deep-rulith.example.json`](deep-rulith.example.json); all paths are absolute and
+the file is used as it is. A missing dsh profile is created on the first start (`--init` after the file creates it and
+exits). Settings files and their backups can carry credentials and are never packed.
 
 Before starting dsh and the manager, the launcher refreshes the general kit for its own Agent (`agentName` in the
-settings; every paired Agent with an existing kit home when no `agentName` is set). When a manager already listens on
+settings; every paired Agent with an existing kit home when no `agentName` is set; with `kitHome`, which the app home
+always has, also every paired Agent whose Worker is enabled but has no kit home yet). When a manager already listens on
 `managerPort`, another launcher shares this manager home and its Workers are running, so the refresh is skipped for
 that start. The Runtime installer replaces the old adapters in `adapters/engineering-work/` and merges the twenty
 kit tools into that Agent's manifest, preserving other tools and setting the Worker timeout from
 `settings.json` (including general web limits); it writes `local.json` and the manifest by temp file + rename.
-Initial pairing and Worker enablement remain in Console.
+The refresh neither pairs an Agent nor enables its Worker.
 
 Because the installer runs at every start, owner edits to what it owns are undone: in the Agent's `local.json` Worker
 environment `RULITH_WORKSPACE_TOOLS` is reset to `read` and `RULITH_WORKER_RUN_TIMEOUT_SECONDS` is recomputed from
@@ -84,6 +102,7 @@ stay). Change limits in the kit home's `settings.json` instead.
 | Launcher setting | Default | Purpose |
 | --- | --- | --- |
 | `agentName` | none | The Agent this launcher uses; the kit refresh at start covers only this Agent. |
+| `kitHome` | none (`kit/` in the app home) | Kit home given to a paired Agent whose Worker has none yet. |
 | `consoleUrl` | none (sign-in uses `https://console.rulith.ai`) | Console address (no secret), also used for this computer's sign-in. When set, a goal awaiting acceptance in the Rulith panel opens the Agent's cases in Console (`<origin>/console/#/cases?agentId=…`), where the person signs the criteria; without it the panel row offers only the local workbench and says so. |
 
 ## Tests
@@ -92,8 +111,8 @@ stay). Change limits in the kit home's `settings.json` instead.
 RULITH_RUNTIME_DIR=<rulith-runtime checkout> npm test
 ```
 
-Without `RULITH_RUNTIME_DIR` the tests use the installed `rulith` package. Set `DSH_BASE_FILE` to the installed `@deepseek-ai/dsh-base/cordis.patch.yml` (or `DSH_REFERENCE_DIR` to its source checkout) to run the tool-disable check as well, and `DSH_MODULES_DIR` to the installed dsh's `node_modules` to run the installed-dsh contract checks (sub-agent tools, and the outgoing trim on dsh's real agent loop and request path). The launcher refreshes its shipped browser plugin on every start; upgrading does not require recreating your profile.
+Without `RULITH_RUNTIME_DIR` the tests use the installed `rulith` package. Set `DSH_BASE_FILE` to the installed `@deepseek-ai/dsh-base/cordis.patch.yml` (or `DSH_REFERENCE_DIR` to its source checkout) to run the tool-disable check as well, and `DSH_MODULES_DIR` to the installed dsh's `node_modules` to run the installed-dsh contract checks (sub-agent tools, and the outgoing trim on dsh's real agent loop and request path); after `npm install` these are `node_modules/@deepseek-ai/dsh-base/cordis.patch.yml` and `node_modules`. The launcher refreshes its shipped browser plugin on every start; upgrading does not require recreating your profile.
 
 ## License
 
-Apache-2.0. dsh is MIT-licensed and installed separately; this repository contains none of its code.
+Apache-2.0. dsh is MIT-licensed and installed from npm as a dependency (pinned); this repository contains none of its code.

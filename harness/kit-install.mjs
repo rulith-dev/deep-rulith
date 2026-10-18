@@ -40,19 +40,22 @@ export const managerListening = (port, timeoutMs = 1000) => new Promise(resolve 
 });
 
 // Refresh the paired Agent(s) that already have an engineering kit home: only `agent` when the launcher names one,
-// every paired Agent otherwise. The Runtime installer overwrites the legacy adapters at the same adapters/engineering-work
+// every paired Agent otherwise. With `kitHome` (the app home's kit, when the launcher has no settings file), an Agent
+// whose Worker is enabled but has no kit home yet is installed there: the first paired Agent gets the kit at the next
+// start without any setting. The Runtime installer overwrites the legacy adapters at the same adapters/engineering-work
 // paths, merges its manifest and writes local.json by temp file + rename. It owns Worker env/timeouts; settings.json and
 // pinned specs stay in their old home. This runs before the manager/Workers start; it neither pairs nor starts anything.
-export function refreshGeneralKits(managerHome, { agent, env = process.env, run = runInstaller, readJson = read } = {}) {
+export function refreshGeneralKits(managerHome, { agent, kitHome, env = process.env, run = runInstaller, readJson = read } = {}) {
   const rows = (readJson(path.join(managerHome, 'registry.json'))?.instances ?? [])
     .filter(row => row.mode === 'local_agent' && !row.signedOutAt && (!agent || row.agentName === agent));
   let count = 0;
   for (const row of rows) {
     const worker = readJson(path.join(row.directory, 'local.json'))?.worker?.env;
-    if (!worker?.ENG_KIT_HOME || !worker.RULITH_WORKER_ROOT || !worker.RULITH_TOOLS_FILE) continue;
+    const home = worker?.ENG_KIT_HOME || kitHome;
+    if (!home || !worker?.RULITH_WORKER_ROOT || !worker.RULITH_TOOLS_FILE) continue;
     const entry = path.join(runtimeDirectory(env), 'local', 'rulith-local.mjs');
     const result = run(process.execPath, [entry, 'kit', 'install', 'general', '--agent', row.agentName,
-      '--kit-home', worker.ENG_KIT_HOME, '--manager-home', managerHome],
+      '--kit-home', home, '--manager-home', managerHome],
     { env, encoding: 'utf8', stdio: 'pipe', windowsHide: true });
     if (result.missingKit)
       throw new Error('Deep Rulith: general kit installation failed; use a Runtime with kits/general (RULITH_RUNTIME_DIR).');
