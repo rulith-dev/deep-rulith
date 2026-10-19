@@ -52,7 +52,7 @@ test('the addendum names the native web tools; both variants share the approved 
   assert.equal(WEB_ADDENDUM, main + ADDENDUM.slice(headless.length));
   assert.equal(CHILD_ADDENDUM, ADDENDUM, 'web children use the headless addendum');
   assert.equal(createHash('sha256').update(ADDENDUM.slice(headless.length)).digest('hex'),
-    'd749f0181382941f6499b9eca17e75ac6283d45cf312d98fb76bb69d42184ed7');
+    'b6d5a863a4d99139e1140968ca38fbde72059d416a6802e7addc19d783c3116b');
   const inventory = read('harness/model-visible.md');
   assert.ok(inventory.includes(ADDENDUM));
   assert.ok(inventory.includes(WEB_ADDENDUM));
@@ -66,7 +66,7 @@ test('goal guidance declares an outcome without a generic test-to-completion rul
   assert.deepEqual(Object.keys(examples[0]).sort(), ['desired', 'label', 'op']);
   assert.doesNotMatch(ADDENDUM, /"op":"add_axiom"/);
   assert.match(ADDENDUM, /user's actual acceptance criteria for the exact target, version and measurement spec, signed by them/);
-  assert.match(ADDENDUM, /desired eng\.check_passed\(check, spec_digest\) from those receipts/);
+  assert.match(ADDENDUM, /desired eng\.check_passed\(key\), copying key from that check's eng\.check_spec receipt \(where the receipt has no key, desired eng\.check_passed\(check, spec_digest\)\)/);
   assert.match(ADDENDUM, /do not write a rule for the goal's outcome/);
   assert.match(ADDENDUM, /A check whose files you change needs a new spec and a new signature/);
 });

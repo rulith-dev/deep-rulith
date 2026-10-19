@@ -21,6 +21,6 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.2.1-alpha.1",
-    "rulith": "^0.17.2"
+    "rulith": "^0.18.0"
   }
 }
