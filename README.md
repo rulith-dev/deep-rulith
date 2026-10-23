@@ -1,3 +1,6 @@
+> **Moved (2026-10-23).** Deep Rulith now lives in [rulith-dev/rulith-runtime](https://github.com/rulith-dev/rulith-runtime)
+> under `app/` (history kept) and becomes the Rulith local app. This repository is retired and receives no further changes.
+
 # Deep Rulith
 
 Deep Rulith is built on [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)
